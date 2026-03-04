@@ -1,0 +1,82 @@
+{
+  "projectType": "data-platform",
+  "projectName": "SQL Data Warehouse",
+  "projectDescription": "A modern data warehouse built with PostgreSQL implementing medallion architecture (Bronze, Silver, Gold) for ETL processes, data modeling, and analytics.",
+  "theme": "aspen",
+  "primaryColor": "#336791",
+  "lightColor": "#5DA7DB",
+  "darkColor": "#1A4D6D",
+  "navigation": {
+    "groups": [
+      {
+        "group": "Getting Started",
+        "pages": [
+          "introduction",
+          "quickstart",
+          "setup"
+        ]
+      },
+      {
+        "group": "Architecture",
+        "pages": [
+          "architecture/overview",
+          "architecture/medallion-architecture",
+          "architecture/data-flow"
+        ]
+      },
+      {
+        "group": "Data Model",
+        "pages": [
+          "data-model/overview",
+          "data-model/bronze-layer",
+          "data-model/silver-layer",
+          "data-model/gold-layer"
+        ]
+      },
+      {
+        "group": "ETL Procedures",
+        "pages": [
+          "etl/overview",
+          "etl/bronze-load",
+          "etl/silver-load",
+          "etl/gold-views"
+        ]
+      },
+      {
+        "group": "Query Guide",
+        "pages": [
+          "queries/analytics",
+          "queries/customer-insights",
+          "queries/product-performance",
+          "queries/sales-trends"
+        ]
+      },
+      {
+        "group": "Operations",
+        "pages": [
+          "operations/deployment",
+          "operations/data-quality",
+          "operations/troubleshooting"
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Medallion architecture with Bronze, Silver, and Gold layers",
+    "ETL procedures for data ingestion and transformation",
+    "Star schema data model with fact and dimension tables",
+    "Data quality validation and cleansing",
+    "PostgreSQL-based data warehouse with Docker support",
+    "Integration of CRM and ERP data sources"
+  ],
+  "publicApiSurface": [
+    "bronze.load_bronze() - Load raw data from CSV files",
+    "silver.load_silver() - Transform and cleanse data",
+    "gold.dim_customer - Customer dimension view",
+    "gold.dim_product - Product dimension view",
+    "gold.fact_sales - Sales fact view",
+    "bronze schema - Raw data tables",
+    "silver schema - Cleansed data tables",
+    "gold schema - Analytics-ready views"
+  ]
+}
