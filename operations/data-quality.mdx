@@ -493,7 +493,7 @@ The Silver layer stored procedure (`proc_load_silver`) implements comprehensive 
     
     # Check if any issues found
     if grep -q "ERROR" $REPORT_FILE; then
-      echo "Quality issues detected!" | mail -s "DWH Quality Alert" admin@example.com
+      echo "Quality issues detected!" | mail -s "DWH Quality Alert" your-email@domain.com
     fi
     ```
   </Step>
