@@ -1,0 +1,203 @@
+---
+title: 'ETL Process Overview'
+description: 'Complete guide to the SQL Data Warehouse ETL pipeline, execution procedures, and error handling'
+---
+
+## Introduction
+
+The SQL Data Warehouse implements a three-layer ETL architecture that follows the Medallion Architecture pattern:
+
+- **Bronze Layer**: Raw data ingestion from CSV files
+- **Silver Layer**: Data transformation, cleansing, and validation
+- **Gold Layer**: Business-ready views and analytics-ready data models
+
+This layered approach ensures data quality, traceability, and separation of concerns throughout the data pipeline.
+
+## ETL Architecture
+
+<Steps>
+  <Step title="Bronze Layer - Raw Data Ingestion">
+    CSV files are loaded directly from source systems (CRM and ERP) into bronze schema tables using PostgreSQL COPY commands. No transformations are applied at this stage.
+  </Step>
+  
+  <Step title="Silver Layer - Data Cleansing">
+    Raw data is transformed, validated, and cleansed. This includes:
+    - Data type conversions
+    - Null handling and default values
+    - String trimming and formatting
+    - Deduplication
+    - Business rule validation
+  </Step>
+  
+  <Step title="Gold Layer - Analytics Views">
+    Dimensional models are created by joining cleansed silver tables to produce:
+    - Fact tables (fact_sales)
+    - Dimension tables (dim_customer, dim_product)
+  </Step>
+</Steps>
+
+## Executing the ETL Pipeline
+
+### Sequential Execution
+
+The ETL procedures must be executed in order due to data dependencies:
+
+```sql
+-- Step 1: Load raw data into Bronze layer
+CALL bronze.load_bronze();
+
+-- Step 2: Transform and cleanse data in Silver layer
+CALL silver.load_silver();
+
+-- Step 3: Gold views are automatically available (no execution needed)
+SELECT * FROM gold.fact_sales LIMIT 10;
+```
+
+### Full Pipeline Execution
+
+```sql
+-- Execute complete ETL pipeline
+DO $$
+BEGIN
+  RAISE NOTICE 'Starting ETL Pipeline...';
+  
+  CALL bronze.load_bronze();
+  RAISE NOTICE 'Bronze layer loaded successfully';
+  
+  CALL silver.load_silver();
+  RAISE NOTICE 'Silver layer loaded successfully';
+  
+  RAISE NOTICE 'ETL Pipeline completed';
+END $$;
+```
+
+## Error Handling
+
+Both bronze and silver procedures implement comprehensive error handling:
+
+### Error Tracking Variables
+
+```sql
+DECLARE
+  v_step TEXT;              -- Current step identifier
+  v_ok int := 0;            -- Count of successful steps
+  v_err int := 0;           -- Count of failed steps
+  v_msg TEXT;               -- Error message
+  v_start_batch timestamp;  -- Batch start time
+  v_end_batch timestamp;    -- Batch end time
+```
+
+### Exception Handling Pattern
+
+Each data loading step follows this pattern:
+
+```sql
+BEGIN
+  DECLARE
+    v_start_date timestamp := clock_timestamp();
+  BEGIN
+    v_step := 'load table_name';
+    RAISE NOTICE 'Step [%] started at %', v_step, to_char(v_start_date, 'HH24:MI:SS');
+    
+    -- Data loading logic here
+    
+    v_ok := v_ok + 1;
+    RAISE NOTICE 'Step [%] completed successfully (%.0f s)',
+      v_step,
+      extract(epoch FROM (clock_timestamp() - v_start_date));
+      
+  EXCEPTION WHEN OTHERS THEN
+    v_err := v_err + 1;
+    v_msg := 'Error in step: ' || v_step || ' - ' || SQLERRM;
+    RAISE EXCEPTION '%', v_msg;
+  END;
+END;
+```
+
+<Note>
+  **Transaction Handling**: Each procedure uses implicit transactions. If any step fails, the entire procedure rolls back, ensuring data consistency.
+</Note>
+
+## Logging and Monitoring
+
+### Timestamp Logging
+
+All procedures log execution timestamps:
+
+```sql
+RAISE NOTICE '[%] load bronze started', to_char(clock_timestamp(), 'HH24:MI:SS');
+-- ... processing ...
+RAISE NOTICE '[%] load bronze finished', to_char(v_end_batch, 'HH24:MI:SS');
+RAISE NOTICE 'load bronze finished in [%] seconds', 
+  extract(epoch FROM (v_end_batch - v_start_batch));
+```
+
+### Monitoring Execution
+
+To view procedure execution logs:
+
+```sql
+-- Check PostgreSQL logs
+SHOW log_destination;
+SHOW log_directory;
+
+-- View recent notices and errors
+SELECT * FROM pg_stat_database WHERE datname = current_database();
+```
+
+## Performance Considerations
+
+<Accordion title="TRUNCATE vs DELETE">
+  The procedures use `TRUNCATE TABLE` instead of `DELETE` for better performance:
+  - Faster execution (no row-by-row scanning)
+  - Immediately reclaims disk space
+  - Resets sequences automatically
+  - Note: Cannot be rolled back in some configurations
+</Accordion>
+
+<Accordion title="COPY Command Performance">
+  PostgreSQL COPY command is the fastest way to load bulk data:
+  - Direct binary loading
+  - Minimal parsing overhead
+  - Supports parallel loading (when configured)
+  - CSV format with header row support
+</Accordion>
+
+<Accordion title="Window Functions">
+  Silver layer uses window functions for deduplication and SCD logic:
+  ```sql
+  ROW_NUMBER() OVER (PARTITION BY cst_id ORDER BY cst_create_date DESC) AS flag_last
+  ```
+  This is more efficient than subqueries or self-joins.
+</Accordion>
+
+## Security and Permissions
+
+All procedures are created with `SECURITY DEFINER` to run with creator privileges:
+
+```sql
+CREATE OR REPLACE PROCEDURE bronze.load_bronze()
+LANGUAGE plpgsql
+SECURITY DEFINER  -- Runs with creator's privileges
+```
+
+Execute permissions are granted to public:
+
+```sql
+GRANT EXECUTE ON PROCEDURE bronze.load_bronze TO PUBLIC;
+GRANT EXECUTE ON PROCEDURE silver.load_silver() TO PUBLIC;
+```
+
+## Next Steps
+
+<CardGroup cols={3}>
+  <Card title="Bronze Load" icon="database" href="/etl/bronze-load">
+    Learn about raw data ingestion
+  </Card>
+  <Card title="Silver Load" icon="sparkles" href="/etl/silver-load">
+    Understand data transformation
+  </Card>
+  <Card title="Gold Views" icon="star" href="/etl/gold-views">
+    Explore dimensional models
+  </Card>
+</CardGroup>

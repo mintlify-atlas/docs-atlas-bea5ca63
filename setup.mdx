@@ -1,0 +1,653 @@
+---
+title: Installation & Setup
+description: Complete guide to installing, configuring, and deploying the SQL Data Warehouse
+---
+
+This guide covers detailed installation, configuration, and deployment options for the SQL Data Warehouse project.
+
+## System Requirements
+
+### Minimum Requirements
+
+- **CPU**: 2 cores
+- **RAM**: 4GB
+- **Disk**: 10GB free space
+- **OS**: Linux, macOS, or Windows with WSL2
+
+### Software Dependencies
+
+<CardGroup cols={2}>
+  <Card title="Docker Engine" icon="docker">
+    Version 20.10 or higher
+  </Card>
+  <Card title="Docker Compose" icon="layer-group">
+    Version 2.0 or higher
+  </Card>
+  <Card title="Git" icon="code-branch">
+    For cloning the repository
+  </Card>
+  <Card title="PostgreSQL Client" icon="database">
+    psql, DBeaver, pgAdmin, or similar
+  </Card>
+</CardGroup>
+
+## Installation
+
+### Option 1: Docker Installation (Recommended)
+
+The Docker setup provides a consistent environment across all platforms.
+
+<Steps>
+  <Step title="Install Docker">
+    Follow the official Docker installation guide for your platform:
+    
+    - **Linux**: https://docs.docker.com/engine/install/
+    - **macOS**: https://docs.docker.com/desktop/install/mac-install/
+    - **Windows**: https://docs.docker.com/desktop/install/windows-install/
+    
+    Verify installation:
+    
+    ```bash
+    docker --version
+    docker-compose --version
+    ```
+  </Step>
+
+  <Step title="Clone the repository">
+    ```bash
+    git clone <repository-url>
+    cd sql-data-warehouse
+    ```
+    
+    Verify the project structure:
+    
+    ```bash
+    ls -la
+    # You should see:
+    # - docker-compose.yml
+    # - scripts/
+    # - datasets/
+    # - README.md
+    ```
+  </Step>
+
+  <Step title="Prepare the datasets">
+    Ensure the datasets directory contains the required CSV files:
+    
+    ```bash
+    ls datasets/source_crm/
+    # Expected: cust_info.csv, prd_info.csv, sales_details.csv
+    
+    ls datasets/source_erp/
+    # Expected: CUST_AZ12.csv, LOC_A101.csv, PX_CAT_G1V2.csv
+    ```
+    
+    <Note>
+      The CSV files should have headers and be UTF-8 encoded. If you're using your own data, ensure column names match the schema definitions.
+    </Note>
+  </Step>
+</Steps>
+
+### Option 2: Native PostgreSQL Installation
+
+For environments where Docker is not available:
+
+<Steps>
+  <Step title="Install PostgreSQL">
+    Install PostgreSQL 14 or higher:
+    
+    <CodeGroup>
+    ```bash Ubuntu/Debian
+    sudo apt update
+    sudo apt install postgresql postgresql-contrib
+    sudo systemctl start postgresql
+    ```
+    
+    ```bash macOS (Homebrew)
+    brew install postgresql@16
+    brew services start postgresql@16
+    ```
+    
+    ```bash RHEL/CentOS
+    sudo dnf install postgresql-server
+    sudo postgresql-setup --initdb
+    sudo systemctl start postgresql
+    ```
+    </CodeGroup>
+  </Step>
+
+  <Step title="Create database and user">
+    ```bash
+    sudo -u postgres psql
+    ```
+    
+    ```sql
+    CREATE USER datawarehouse WITH PASSWORD 'your_secure_password';
+    CREATE DATABASE dwh OWNER datawarehouse;
+    GRANT ALL PRIVILEGES ON DATABASE dwh TO datawarehouse;
+    ```
+  </Step>
+
+  <Step title="Update file paths in scripts">
+    The CSV file paths in the ETL scripts need to be updated for local file system access:
+    
+    ```sql scripts/bronze/proc_load_bronze.sql
+    -- Change from:
+    COPY bronze.crm_cust_info FROM '/datasets/source_crm/cust_info.csv'
+    
+    -- To your actual path:
+    COPY bronze.crm_cust_info FROM '/full/path/to/datasets/source_crm/cust_info.csv'
+    ```
+    
+    <Warning>
+      Ensure the PostgreSQL user has read permissions on the CSV files.
+    </Warning>
+  </Step>
+</Steps>
+
+## Configuration
+
+### Environment Variables
+
+Create a `.env` file in the project root directory:
+
+```bash .env
+# Database Configuration
+POSTGRES_USER=datawarehouse
+POSTGRES_PASSWORD=your_secure_password_here
+POSTGRES_DB=dwh
+
+# Optional: Data directory for volume mount
+# PGDATA=/var/lib/postgresql/data/pgdata
+```
+
+<Accordion title="Environment Variable Reference">
+  | Variable | Description | Default | Required |
+  |----------|-------------|---------|----------|
+  | `POSTGRES_USER` | PostgreSQL superuser name | - | Yes |
+  | `POSTGRES_PASSWORD` | PostgreSQL password | - | Yes |
+  | `POSTGRES_DB` | Initial database name | - | Yes |
+  | `PGDATA` | PostgreSQL data directory | `/var/lib/postgresql/data/pgdata` | No |
+</Accordion>
+
+### Docker Compose Configuration
+
+The `docker-compose.yml` file defines the container setup:
+
+```yaml docker-compose.yml
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: datawarehouse
+    restart: unless-stopped
+
+    environment:
+      POSTGRES_USER:     ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB:       ${POSTGRES_DB}
+      PGDATA:            /var/lib/postgresql/data/pgdata
+
+    ports:
+      - "5432:5432"
+
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+      - ./datasets:/datasets:ro
+      
+volumes:
+  pg_data:
+```
+
+<AccordionGroup>
+  <Accordion title="Volume Configuration">
+    **Named Volume (`pg_data`)**:
+    - Persists database data across container restarts
+    - Managed by Docker
+    - Data survives `docker-compose down`
+    
+    **Bind Mount (`./datasets`)**:
+    - Mounts local datasets directory to `/datasets` in container
+    - Read-only (`:ro`) for data protection
+    - Changes to local files immediately reflected in container
+  </Accordion>
+
+  <Accordion title="Port Mapping">
+    Default mapping is `5432:5432` (host:container).
+    
+    To avoid conflicts with existing PostgreSQL:
+    
+    ```yaml
+    ports:
+      - "5433:5432"  # Access via localhost:5433
+    ```
+    
+    Update your connection string accordingly:
+    
+    ```bash
+    psql -h localhost -p 5433 -U datawarehouse -d dwh
+    ```
+  </Accordion>
+
+  <Accordion title="Restart Policy">
+    `restart: unless-stopped` ensures the container:
+    - Restarts automatically if it crashes
+    - Starts on system boot
+    - Doesn't restart if manually stopped
+    
+    Other options:
+    - `no`: Never restart
+    - `always`: Always restart
+    - `on-failure`: Restart only on errors
+  </Accordion>
+</AccordionGroup>
+
+## Database Initialization
+
+### Schema Creation
+
+Initialize the three-layer architecture:
+
+```bash
+docker exec -i datawarehouse psql -U datawarehouse -d dwh < scripts/SchemaCreator.sql
+```
+
+This creates:
+- `bronze` schema - Raw data layer
+- `silver` schema - Cleaned data layer  
+- `gold` schema - Analytics layer
+
+<Note>
+  The `CASCADE` option will drop existing objects. Run this only once during initial setup, or when you need to completely reset the warehouse.
+</Note>
+
+### Layer-by-Layer Setup
+
+<Steps>
+  <Step title="Bronze Layer Setup">
+    Create raw data tables and load data:
+    
+    ```bash
+    # Create tables
+    docker exec -i datawarehouse psql -U datawarehouse -d dwh \
+      < scripts/bronze/ddl_bronze.sql
+    
+    # Load data from CSV files
+    docker exec -i datawarehouse psql -U datawarehouse -d dwh \
+      < scripts/bronze/proc_load_bronze.sql
+    ```
+    
+    **What this does**:
+    - Creates 6 tables for CRM and ERP data
+    - Defines `bronze.load_bronze()` procedure
+    - Executes the procedure to load all CSV files
+    - Grants necessary permissions
+  </Step>
+
+  <Step title="Silver Layer Setup">
+    Create cleaned tables and transform data:
+    
+    ```bash
+    # Create tables
+    docker exec -i datawarehouse psql -U datawarehouse -d dwh \
+      < scripts/silver/ddl_silver.sql
+    
+    # Transform and load data
+    docker exec -i datawarehouse psql -U datawarehouse -d dwh \
+      < scripts/silver/proc_load_silver.sql
+    ```
+    
+    **Transformations include**:
+    - Date format conversions (YYYYMMDD → DATE)
+    - Code standardization (M → Male, F → Female)
+    - Null handling and default values
+    - Duplicate removal using window functions
+    - Price and quantity validations
+  </Step>
+
+  <Step title="Gold Layer Setup">
+    Create analytical views:
+    
+    ```bash
+    docker exec -i datawarehouse psql -U datawarehouse -d dwh \
+      < scripts/gold/ddl_gold.sql
+    ```
+    
+    **Creates star schema**:
+    - `dim_customer` - Customer dimension with demographics from both CRM and ERP
+    - `dim_product` - Product dimension with category hierarchies
+    - `fact_sales` - Sales fact table with foreign keys to dimensions
+  </Step>
+</Steps>
+
+### Verification
+
+Confirm successful setup:
+
+```sql
+-- Check schemas exist
+SELECT schema_name 
+FROM information_schema.schemata 
+WHERE schema_name IN ('bronze', 'silver', 'gold');
+
+-- Count records in each layer
+SELECT 'bronze.crm_cust_info' as table_name, COUNT(*) as row_count 
+FROM bronze.crm_cust_info
+UNION ALL
+SELECT 'silver.crm_cust_info', COUNT(*) FROM silver.crm_cust_info
+UNION ALL
+SELECT 'gold.dim_customer', COUNT(*) FROM gold.dim_customer;
+
+-- Verify Gold layer data quality
+SELECT 
+    COUNT(DISTINCT f.customer_key) as customers,
+    COUNT(DISTINCT f.product_key) as products,
+    COUNT(DISTINCT f.order_number) as orders,
+    SUM(f.sales_amount) as total_sales
+FROM gold.fact_sales f;
+```
+
+## Connection Methods
+
+### Using psql (Command Line)
+
+```bash
+# Connect through Docker
+docker exec -it datawarehouse psql -U datawarehouse -d dwh
+
+# Connect directly (if port 5432 is exposed)
+psql -h localhost -p 5432 -U datawarehouse -d dwh
+
+# Connect with connection string
+psql "postgresql://datawarehouse:password@localhost:5432/dwh"
+```
+
+### Using DBeaver
+
+1. Open DBeaver and create a new connection
+2. Select **PostgreSQL**
+3. Enter connection details:
+   - **Host**: localhost
+   - **Port**: 5432
+   - **Database**: dwh
+   - **Username**: datawarehouse
+   - **Password**: (from .env file)
+4. Test connection and save
+
+### Using Python (psycopg2)
+
+```python
+import psycopg2
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
+conn = psycopg2.connect(
+    host="localhost",
+    port=5432,
+    database=os.getenv('POSTGRES_DB'),
+    user=os.getenv('POSTGRES_USER'),
+    password=os.getenv('POSTGRES_PASSWORD')
+)
+
+cur = conn.cursor()
+cur.execute("SELECT COUNT(*) FROM gold.fact_sales")
+print(f"Total sales records: {cur.fetchone()[0]}")
+
+conn.close()
+```
+
+## Maintenance & Operations
+
+### Starting and Stopping
+
+```bash
+# Start containers
+docker-compose up -d
+
+# Stop containers (keeps data)
+docker-compose stop
+
+# Stop and remove containers (keeps data in volumes)
+docker-compose down
+
+# Remove everything including volumes (DESTRUCTIVE)
+docker-compose down -v
+```
+
+### Viewing Logs
+
+```bash
+# View all logs
+docker-compose logs
+
+# Follow logs in real-time
+docker-compose logs -f
+
+# View last 100 lines
+docker-compose logs --tail=100
+```
+
+### Backup and Restore
+
+<CodeGroup>
+```bash Backup
+# Backup entire database
+docker exec datawarehouse pg_dump -U datawarehouse dwh > backup_$(date +%Y%m%d).sql
+
+# Backup specific schema
+docker exec datawarehouse pg_dump -U datawarehouse -n gold dwh > backup_gold.sql
+
+# Compressed backup
+docker exec datawarehouse pg_dump -U datawarehouse dwh | gzip > backup.sql.gz
+```
+
+```bash Restore
+# Restore from backup
+docker exec -i datawarehouse psql -U datawarehouse dwh < backup_20260304.sql
+
+# Restore compressed backup
+gunzip -c backup.sql.gz | docker exec -i datawarehouse psql -U datawarehouse dwh
+```
+</CodeGroup>
+
+### Reloading Data
+
+To refresh data in the warehouse:
+
+```sql
+-- Reload Bronze layer
+CALL bronze.load_bronze();
+
+-- Reload Silver layer
+CALL silver.load_silver();
+
+-- Gold layer views automatically reflect new data
+SELECT COUNT(*) FROM gold.fact_sales;
+```
+
+## Troubleshooting
+
+### Common Issues
+
+<AccordionGroup>
+  <Accordion title="Permission denied when loading CSV files">
+    **Problem**: PostgreSQL cannot read CSV files from datasets directory.
+    
+    **Solution**:
+    ```bash
+    # Check if files are accessible inside container
+    docker exec datawarehouse ls -la /datasets/source_crm/
+    
+    # If files are not visible, check volume mount
+    docker inspect datawarehouse | grep datasets
+    
+    # Ensure files have read permissions
+    chmod -R 644 datasets/source_crm/*.csv
+    chmod -R 644 datasets/source_erp/*.csv
+    ```
+  </Accordion>
+
+  <Accordion title="Port 5432 already in use">
+    **Problem**: Another PostgreSQL instance is using port 5432.
+    
+    **Solution**:
+    ```bash
+    # Find what's using the port
+    lsof -i :5432
+    # or
+    sudo netstat -nlp | grep 5432
+    
+    # Option 1: Stop the other PostgreSQL
+    sudo systemctl stop postgresql
+    
+    # Option 2: Use different port in docker-compose.yml
+    ports:
+      - "5433:5432"
+    ```
+  </Accordion>
+
+  <Accordion title="Container exits immediately after starting">
+    **Problem**: Database fails to initialize.
+    
+    **Solution**:
+    ```bash
+    # View container logs
+    docker logs datawarehouse
+    
+    # Common causes:
+    # 1. Invalid environment variables
+    # 2. Corrupted data volume
+    # 3. Insufficient disk space
+    
+    # Reset and try again
+    docker-compose down -v
+    docker-compose up -d
+    ```
+  </Accordion>
+
+  <Accordion title="ETL procedure fails with 'relation does not exist'">
+    **Problem**: Tables were not created before running load procedures.
+    
+    **Solution**:
+    ```bash
+    # Always run DDL before load procedures
+    docker exec -i datawarehouse psql -U datawarehouse -d dwh \
+      < scripts/bronze/ddl_bronze.sql
+    
+    # Then run the load procedure
+    docker exec -i datawarehouse psql -U datawarehouse -d dwh \
+      < scripts/bronze/proc_load_bronze.sql
+    ```
+  </Accordion>
+
+  <Accordion title="Data quality issues in Gold layer">
+    **Problem**: Null values or missing data in analytical views.
+    
+    **Solution**:
+    ```sql
+    -- Check for data quality issues
+    SELECT 
+        COUNT(*) as total_records,
+        COUNT(customer_key) as with_customer,
+        COUNT(product_key) as with_product,
+        COUNT(*) - COUNT(customer_key) as missing_customer,
+        COUNT(*) - COUNT(product_key) as missing_product
+    FROM gold.fact_sales;
+    
+    -- Review Silver layer transformations
+    SELECT * FROM silver.crm_sales_details WHERE sls_cust_id IS NULL LIMIT 10;
+    
+    -- Reload Silver layer to reapply transformations
+    CALL silver.load_silver();
+    ```
+  </Accordion>
+</AccordionGroup>
+
+### Performance Optimization
+
+<CodeGroup>
+```sql Indexes
+-- Add indexes to improve query performance
+CREATE INDEX idx_fact_sales_customer ON gold.fact_sales(customer_key);
+CREATE INDEX idx_fact_sales_product ON gold.fact_sales(product_key);
+CREATE INDEX idx_fact_sales_order_date ON gold.fact_sales(order_date);
+```
+
+```sql Analyze
+-- Update table statistics for better query plans
+ANALYZE bronze.crm_sales_details;
+ANALYZE silver.crm_sales_details;
+ANALYZE gold.fact_sales;
+```
+
+```sql Vacuum
+-- Reclaim space and update statistics
+VACUUM ANALYZE gold.fact_sales;
+```
+</CodeGroup>
+
+## Security Best Practices
+
+<Warning>
+  These security measures are critical for production deployments.
+</Warning>
+
+### Password Security
+
+```bash
+# Never commit .env files
+echo ".env" >> .gitignore
+
+# Use strong passwords (20+ characters)
+# Generate with:
+openssl rand -base64 32
+```
+
+### Network Security
+
+```yaml docker-compose.yml
+# For production, don't expose PostgreSQL port to host
+services:
+  db:
+    # Remove or comment out ports section
+    # ports:
+    #   - "5432:5432"
+    
+    # Access only through Docker network
+    networks:
+      - datawarehouse_network
+
+networks:
+  datawarehouse_network:
+    driver: bridge
+```
+
+### Role-Based Access
+
+```sql
+-- Create read-only user for analysts
+CREATE ROLE analyst_readonly;
+GRANT USAGE ON SCHEMA gold TO analyst_readonly;
+GRANT SELECT ON ALL TABLES IN SCHEMA gold TO analyst_readonly;
+
+CREATE USER analyst1 WITH PASSWORD 'secure_password';
+GRANT analyst_readonly TO analyst1;
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Data Model" icon="sitemap" href="/data-model/overview">
+    Explore the star schema and relationships
+  </Card>
+  <Card title="ETL Procedures" icon="gears" href="/etl/overview">
+    Understand data transformation logic
+  </Card>
+  <Card title="Analytics Queries" icon="magnifying-glass-chart" href="/queries/analytics">
+    Sample queries for business insights
+  </Card>
+  <Card title="Troubleshooting" icon="wrench" href="/operations/troubleshooting">
+    Common issues and solutions
+  </Card>
+</CardGroup>

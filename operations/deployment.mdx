@@ -1,0 +1,497 @@
+---
+title: 'Deployment Guide'
+description: 'Deploy and manage the SQL Data Warehouse using Docker, including environment configuration, backup procedures, and production best practices'
+---
+
+## Overview
+
+The SQL Data Warehouse is containerized using Docker, making deployment straightforward and consistent across environments. This guide covers deployment procedures, configuration management, and operational best practices.
+
+## Docker Deployment
+
+### Prerequisites
+
+Before deploying the data warehouse, ensure you have:
+
+- Docker Engine 20.10+ installed
+- Docker Compose V2 installed
+- At least 2GB of available disk space
+- Network access to port 5432 (or your chosen port)
+
+### Docker Compose Configuration
+
+The data warehouse uses a single-service architecture with PostgreSQL 16:
+
+```yaml docker-compose.yml
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: datawarehouse
+    restart: unless-stopped
+
+    environment:
+      POSTGRES_USER:     ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB:       ${POSTGRES_DB}
+      PGDATA:            /var/lib/postgresql/data/pgdata
+
+    ports:
+      - "5432:5432"
+
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+      - ./datasets:/datasets:ro
+
+volumes:
+  pg_data:
+```
+
+### Environment Variables
+
+<Steps>
+  <Step title="Create environment file">
+    Create a `.env` file in the project root directory:
+
+    ```bash
+    POSTGRES_USER=dwh_admin
+    POSTGRES_PASSWORD=your_secure_password
+    POSTGRES_DB=datawarehouse
+    ```
+
+    <Warning>
+      Never commit the `.env` file to version control. Ensure it's listed in `.gitignore`.
+    </Warning>
+  </Step>
+
+  <Step title="Configure database credentials">
+    Set strong passwords for production environments:
+    
+    - **POSTGRES_USER**: Database superuser name (default: `dwh_admin`)
+    - **POSTGRES_PASSWORD**: Strong password (minimum 16 characters recommended)
+    - **POSTGRES_DB**: Database name (default: `datawarehouse`)
+  </Step>
+
+  <Step title="Verify configuration">
+    Ensure your `.env` file is properly formatted and all required variables are set.
+  </Step>
+</Steps>
+
+## Deployment Steps
+
+<Steps>
+  <Step title="Prepare datasets">
+    Place your source CSV files in the `datasets/` directory:
+
+    ```
+    datasets/
+    ├── source_crm/
+    │   ├── cust_info.csv
+    │   ├── prd_info.csv
+    │   └── sales_details.csv
+    └── source_erp/
+        ├── CUST_AZ12.csv
+        ├── LOC_A101.csv
+        └── PX_CAT_G1V2.csv
+    ```
+
+    The datasets directory is mounted as read-only (`ro`) in the container.
+  </Step>
+
+  <Step title="Start the database">
+    Launch the PostgreSQL container:
+
+    ```bash
+    docker-compose up -d
+    ```
+
+    The `-d` flag runs the container in detached mode.
+  </Step>
+
+  <Step title="Verify container status">
+    Check that the container is running:
+
+    ```bash
+    docker ps | grep datawarehouse
+    ```
+
+    Expected output:
+    ```
+    CONTAINER ID   IMAGE                  STATUS         PORTS
+    abc123def456   postgres:16-alpine     Up 10 seconds  0.0.0.0:5432->5432/tcp
+    ```
+  </Step>
+
+  <Step title="Initialize database schemas">
+    Connect to the database and run the schema creator:
+
+    ```bash
+    docker exec -it datawarehouse psql -U dwh_admin -d datawarehouse
+    ```
+
+    Then execute the schema creation script:
+
+    ```sql
+    \i /path/to/SchemaCreator.sql
+    ```
+
+    This creates the Bronze, Silver, and Gold schemas for the Medallion Architecture.
+  </Step>
+
+  <Step title="Load Bronze layer">
+    Execute the Bronze layer DDL and load procedure:
+
+    ```bash
+    docker exec -i datawarehouse psql -U dwh_admin -d datawarehouse < scripts/bronze/ddl_bronze.sql
+    docker exec -i datawarehouse psql -U dwh_admin -d datawarehouse < scripts/bronze/proc_load_bronze.sql
+    ```
+
+    This loads raw data from CSV files into Bronze tables.
+  </Step>
+
+  <Step title="Load Silver layer">
+    Execute the Silver layer DDL and transformation procedure:
+
+    ```bash
+    docker exec -i datawarehouse psql -U dwh_admin -d datawarehouse < scripts/silver/ddl_silver.sql
+    docker exec -i datawarehouse psql -U dwh_admin -d datawarehouse < scripts/silver/proc_load_silver.sql
+    ```
+
+    This cleanses and transforms data from Bronze to Silver.
+  </Step>
+
+  <Step title="Load Gold layer">
+    Create the Gold layer dimensional model:
+
+    ```bash
+    docker exec -i datawarehouse psql -U dwh_admin -d datawarehouse < scripts/gold/ddl_gold.sql
+    ```
+
+    This creates dimension and fact views for analytics.
+  </Step>
+</Steps>
+
+## Volume Management
+
+### Data Persistence
+
+The data warehouse uses Docker volumes for persistent storage:
+
+- **pg_data**: Stores PostgreSQL data files
+- **./datasets**: Host directory mounted as read-only for source data
+
+<Note>
+  The `pg_data` volume persists data even when containers are stopped or removed. To completely reset the database, you must explicitly remove the volume.
+</Note>
+
+### Volume Commands
+
+```bash
+# List volumes
+docker volume ls
+
+# Inspect volume details
+docker volume inspect sql-data-warehouse_pg_data
+
+# Remove volume (WARNING: destroys all data)
+docker-compose down -v
+```
+
+## Production Deployment
+
+### Security Hardening
+
+<Warning>
+  The default configuration is suitable for development only. Production deployments require additional security measures.
+</Warning>
+
+<Accordion title="Network Security">
+  - Do not expose port 5432 directly to the internet
+  - Use a reverse proxy or VPN for remote access
+  - Consider changing the default port mapping:
+    ```yaml
+    ports:
+      - "127.0.0.1:5432:5432"  # Localhost only
+    ```
+  - Implement firewall rules to restrict access
+</Accordion>
+
+<Accordion title="Authentication & Authorization">
+  - Use strong, randomly generated passwords
+  - Implement role-based access control (RBAC)
+  - Create application-specific users with limited privileges:
+    ```sql
+    CREATE USER app_reader WITH PASSWORD 'secure_password';
+    GRANT USAGE ON SCHEMA gold TO app_reader;
+    GRANT SELECT ON ALL TABLES IN SCHEMA gold TO app_reader;
+    ```
+  - Rotate credentials regularly
+</Accordion>
+
+<Accordion title="SSL/TLS Configuration">
+  Enable SSL for encrypted connections:
+  
+  1. Generate SSL certificates
+  2. Mount certificates in the container:
+     ```yaml
+     volumes:
+       - ./certs/server.crt:/var/lib/postgresql/server.crt:ro
+       - ./certs/server.key:/var/lib/postgresql/server.key:ro
+     ```
+  3. Configure PostgreSQL to require SSL:
+     ```sql
+     ALTER SYSTEM SET ssl = 'on';
+     ALTER SYSTEM SET ssl_cert_file = '/var/lib/postgresql/server.crt';
+     ALTER SYSTEM SET ssl_key_file = '/var/lib/postgresql/server.key';
+     ```
+</Accordion>
+
+### Resource Management
+
+Configure resource limits in production:
+
+```yaml docker-compose.yml
+services:
+  db:
+    # ... existing configuration
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 4G
+        reservations:
+          cpus: '1.0'
+          memory: 2G
+```
+
+### Monitoring Integration
+
+Integrate with monitoring tools:
+
+```yaml
+services:
+  db:
+    # ... existing configuration
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+```
+
+## Backup Procedures
+
+### Automated Backups
+
+<Steps>
+  <Step title="Create backup script">
+    Create a backup script `backup.sh`:
+
+    ```bash
+    #!/bin/bash
+    BACKUP_DIR="/backups"
+    TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+    BACKUP_FILE="datawarehouse_${TIMESTAMP}.sql"
+
+    docker exec datawarehouse pg_dump -U dwh_admin -d datawarehouse \
+      -F c -f /tmp/${BACKUP_FILE}
+    
+    docker cp datawarehouse:/tmp/${BACKUP_FILE} ${BACKUP_DIR}/
+    
+    # Compress backup
+    gzip ${BACKUP_DIR}/${BACKUP_FILE}
+    
+    # Cleanup old backups (keep last 30 days)
+    find ${BACKUP_DIR} -name "*.gz" -mtime +30 -delete
+    ```
+  </Step>
+
+  <Step title="Schedule with cron">
+    Add to crontab for daily backups at 2 AM:
+
+    ```bash
+    0 2 * * * /path/to/backup.sh >> /var/log/dwh_backup.log 2>&1
+    ```
+  </Step>
+
+  <Step title="Test backup restoration">
+    Regularly test backup restoration:
+
+    ```bash
+    # Restore from backup
+    gunzip -c /backups/datawarehouse_20260304_020000.sql.gz | \
+      docker exec -i datawarehouse pg_restore -U dwh_admin -d datawarehouse_test
+    ```
+  </Step>
+</Steps>
+
+### Schema-Only Backups
+
+Backup schema definitions separately:
+
+```bash
+docker exec datawarehouse pg_dump -U dwh_admin -d datawarehouse \
+  --schema-only -F p -f /tmp/schema_backup.sql
+```
+
+### Volume Snapshots
+
+For quick recovery, create volume snapshots:
+
+```bash
+# Stop the container
+docker-compose stop
+
+# Create volume backup
+docker run --rm -v sql-data-warehouse_pg_data:/data \
+  -v $(pwd)/backups:/backup alpine \
+  tar czf /backup/pgdata_backup.tar.gz -C /data .
+
+# Start the container
+docker-compose start
+```
+
+## Maintenance Procedures
+
+### Routine Maintenance
+
+<Accordion title="Vacuum and Analyze">
+  Run regular maintenance to optimize performance:
+
+  ```sql
+  -- Full vacuum (requires exclusive lock)
+  VACUUM FULL ANALYZE;
+
+  -- Or regular vacuum (non-blocking)
+  VACUUM ANALYZE;
+  ```
+
+  Schedule weekly using `pg_cron` or external scheduler.
+</Accordion>
+
+<Accordion title="Index Maintenance">
+  Rebuild indexes periodically:
+
+  ```sql
+  -- Reindex specific schema
+  REINDEX SCHEMA silver;
+  REINDEX SCHEMA gold;
+
+  -- Reindex entire database (offline maintenance)
+  REINDEX DATABASE datawarehouse;
+  ```
+</Accordion>
+
+<Accordion title="Log Rotation">
+  Configure PostgreSQL log rotation:
+
+  ```sql
+  ALTER SYSTEM SET log_rotation_age = '1d';
+  ALTER SYSTEM SET log_rotation_size = '100MB';
+  ALTER SYSTEM SET log_filename = 'postgresql-%Y-%m-%d_%H%M%S.log';
+  SELECT pg_reload_conf();
+  ```
+</Accordion>
+
+### Container Updates
+
+<Steps>
+  <Step title="Backup before updating">
+    Always create a backup before updating:
+
+    ```bash
+    ./backup.sh
+    ```
+  </Step>
+
+  <Step title="Pull new image">
+    Update the PostgreSQL image:
+
+    ```bash
+    docker-compose pull
+    ```
+  </Step>
+
+  <Step title="Restart with new image">
+    ```bash
+    docker-compose up -d
+    ```
+
+    Docker Compose will recreate the container with the new image while preserving data volumes.
+  </Step>
+
+  <Step title="Verify upgrade">
+    Check PostgreSQL version:
+
+    ```bash
+    docker exec datawarehouse psql -U dwh_admin -d datawarehouse -c "SELECT version();"
+    ```
+  </Step>
+</Steps>
+
+## Scaling Considerations
+
+### Vertical Scaling
+
+Increase resources allocated to the container:
+
+1. Update `docker-compose.yml` with higher resource limits
+2. Tune PostgreSQL configuration for larger memory:
+   ```sql
+   ALTER SYSTEM SET shared_buffers = '2GB';
+   ALTER SYSTEM SET effective_cache_size = '6GB';
+   ALTER SYSTEM SET work_mem = '64MB';
+   SELECT pg_reload_conf();
+   ```
+
+### Horizontal Scaling
+
+For read-heavy workloads, consider:
+
+- **Read replicas**: Configure PostgreSQL streaming replication
+- **Connection pooling**: Use PgBouncer to manage connections
+- **Query caching**: Implement application-level caching for Gold layer queries
+
+<Note>
+  The current architecture focuses on analytical workloads. For high-concurrency scenarios, consider separating the Gold layer into a dedicated analytics database.
+</Note>
+
+## Health Checks
+
+Monitor database health:
+
+```bash
+# Check container health
+docker inspect datawarehouse | grep -A 10 Health
+
+# Check database connectivity
+docker exec datawarehouse pg_isready -U dwh_admin
+
+# Monitor active connections
+docker exec datawarehouse psql -U dwh_admin -d datawarehouse \
+  -c "SELECT count(*) FROM pg_stat_activity;"
+```
+
+Add health check to docker-compose:
+
+```yaml
+services:
+  db:
+    # ... existing configuration
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dwh_admin"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Data Quality" icon="shield-check" href="/operations/data-quality">
+    Implement quality checks and validation
+  </Card>
+  <Card title="Troubleshooting" icon="wrench" href="/operations/troubleshooting">
+    Debug common deployment issues
+  </Card>
+</CardGroup>

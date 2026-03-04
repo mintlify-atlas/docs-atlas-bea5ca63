@@ -1,0 +1,509 @@
+---
+title: 'Gold Layer - Dimensional Models'
+description: 'Documentation for Gold layer views including fact_sales, dim_customer, and dim_product'
+---
+
+## Overview
+
+The Gold layer represents the final, business-ready data models in the data warehouse. It consists of dimensional views that combine and aggregate data from the Silver layer into fact tables and dimension tables following the star schema design pattern.
+
+<Note>
+  Gold layer objects are **views**, not tables. They provide real-time access to the latest Silver data without duplicating storage.
+</Note>
+
+## Star Schema Architecture
+
+The Gold layer implements a star schema with one fact table and two dimension tables:
+
+```
+         dim_customer
+                |
+                | customer_key
+                |
+         fact_sales -------- product_key -------- dim_product
+```
+
+<CardGroup cols={3}>
+  <Card title="fact_sales" icon="chart-line">
+    Sales transactions with foreign keys to dimensions
+  </Card>
+  <Card title="dim_customer" icon="users">
+    Customer master with demographics and attributes
+  </Card>
+  <Card title="dim_product" icon="box">
+    Product catalog with categories and pricing
+  </Card>
+</CardGroup>
+
+## Gold Layer DDL
+
+Here's the complete Gold layer definition from `/home/daytona/workspace/source/scripts/gold/ddl_gold.sql`:
+
+```sql
+-- Customer Dimension
+drop view gold.dim_customer;
+create view gold.dim_customer as 
+select 
+  ROW_NUMBER() over (order by cst_id) as customer_key,
+  ci.cst_id as customer_id,
+  ci.cst_key as customer_number,
+  ci.cst_firstname as first_name,
+  ci.cst_lastname as last_name,
+  ci.cst_marital_status as marital_status,
+  case 
+    when ci.cst_gndr !='n/a' then ci.cst_gndr 
+    else coalesce(ca.gen, 'n/a') 
+  end as gender,
+  ca.bdate as birth_date,
+  ci.cst_create_date as create_date
+from silver.crm_cust_info ci
+left join silver.erp_cust_az12 ca
+  on ci.cst_key = ca.cid
+left join silver.erp_loc_a101 la
+  on ci.cst_key = la.cid;
+
+-- Product Dimension
+drop VIEW gold.dim_product;
+create view gold.dim_product as
+select
+  row_number() over (order by pn.prd_start_dt, pn.prd_key) as product_key,
+  pn.prd_id as product_id,
+  pn.prd_key as product_number,
+  pn.prd_name as product_name,
+  pn.cat_id as category_id,
+  pc.cat as category,
+  pc.subcat as subcategory,
+  pc.manteinance,
+  pn.prd_cost as product_cost,
+  pn.prd_line as product_line,
+  pn.prd_start_dt as product_start_date
+from silver.crm_prd_info pn
+left join silver.erp_px_cat_g1v2 pc
+  on pn.cat_id = pc.id
+where pn.prd_end_dt is null;
+
+-- Sales Fact Table
+drop view gold.fact_sales;
+create view gold.fact_sales as
+select
+  si.sls_ord_num as order_number,
+  pr.product_key,
+  cu.customer_key,
+  si.sls_ord_dt as order_date,
+  si.sls_ship_dt as shipphing_date,
+  si.sls_sales as sales_amount,
+  si.sls_quantity as quantity,
+  si.sls_price as price
+from silver.crm_sales_details si
+left join gold.dim_product pr
+  on si.sls_prd_key = pr.product_number
+left join gold.dim_customer cu
+  on si.sls_cust_id = cu.customer_id;
+```
+
+## Dimension Tables
+
+### dim_customer
+
+The customer dimension integrates data from three Silver tables:
+
+<Steps>
+  <Step title="Base Table: crm_cust_info">
+    Primary customer information from the CRM system
+  </Step>
+  <Step title="Left Join: erp_cust_az12">
+    Enrich with birth date and gender from ERP
+  </Step>
+  <Step title="Left Join: erp_loc_a101">
+    Add location information (referenced but not selected)
+  </Step>
+</Steps>
+
+#### Schema
+
+| Column | Type | Description | Source |
+|--------|------|-------------|--------|
+| `customer_key` | INTEGER | Surrogate key (auto-generated) | ROW_NUMBER() |
+| `customer_id` | INTEGER | Natural key from CRM | silver.crm_cust_info.cst_id |
+| `customer_number` | VARCHAR | Business key | silver.crm_cust_info.cst_key |
+| `first_name` | VARCHAR | Customer first name | silver.crm_cust_info.cst_firstname |
+| `last_name` | VARCHAR | Customer last name | silver.crm_cust_info.cst_lastname |
+| `marital_status` | VARCHAR | Single/Married/n/a | silver.crm_cust_info.cst_marital_status |
+| `gender` | VARCHAR | Male/Female/n/a | Coalesced from CRM and ERP |
+| `birth_date` | DATE | Date of birth | silver.erp_cust_az12.bdate |
+| `create_date` | DATE | Account creation date | silver.crm_cust_info.cst_create_date |
+
+#### Gender Coalescing Logic
+
+```sql
+case 
+  when ci.cst_gndr != 'n/a' then ci.cst_gndr 
+  else coalesce(ca.gen, 'n/a') 
+end as gender
+```
+
+<Accordion title="How Gender Coalescing Works">
+  1. **First priority**: Use gender from CRM if available (not 'n/a')
+  2. **Fallback**: Use gender from ERP if CRM is missing
+  3. **Default**: Set to 'n/a' if both sources are unavailable
+  
+  This ensures the best available data is used for analysis.
+</Accordion>
+
+#### Example Query
+
+```sql
+SELECT 
+  customer_key,
+  customer_number,
+  first_name || ' ' || last_name as full_name,
+  gender,
+  marital_status,
+  EXTRACT(YEAR FROM AGE(birth_date)) as age
+FROM gold.dim_customer
+WHERE gender != 'n/a'
+LIMIT 10;
+```
+
+### dim_product
+
+The product dimension combines product information with category hierarchies:
+
+<Steps>
+  <Step title="Base Table: crm_prd_info">
+    Product master data from CRM
+  </Step>
+  <Step title="Left Join: erp_px_cat_g1v2">
+    Enrich with category and subcategory from ERP
+  </Step>
+  <Step title="Filter: Current Products Only">
+    WHERE prd_end_dt IS NULL ensures only active products
+  </Step>
+</Steps>
+
+#### Schema
+
+| Column | Type | Description | Source |
+|--------|------|-------------|--------|
+| `product_key` | INTEGER | Surrogate key | ROW_NUMBER() |
+| `product_id` | INTEGER | Natural key | silver.crm_prd_info.prd_id |
+| `product_number` | VARCHAR | Business key | silver.crm_prd_info.prd_key |
+| `product_name` | VARCHAR | Product name | silver.crm_prd_info.prd_name |
+| `category_id` | VARCHAR | Category code | silver.crm_prd_info.cat_id |
+| `category` | VARCHAR | Category name | silver.erp_px_cat_g1v2.cat |
+| `subcategory` | VARCHAR | Subcategory name | silver.erp_px_cat_g1v2.subcat |
+| `manteinance` | VARCHAR | Maintenance flag | silver.erp_px_cat_g1v2.manteinance |
+| `product_cost` | DECIMAL | Manufacturing cost | silver.crm_prd_info.prd_cost |
+| `product_line` | VARCHAR | Mountain/Road/Touring | silver.crm_prd_info.prd_line |
+| `product_start_date` | DATE | Effective start date | silver.crm_prd_info.prd_start_dt |
+
+#### Surrogate Key Generation
+
+```sql
+row_number() over (order by pn.prd_start_dt, pn.prd_key) as product_key
+```
+
+<Accordion title="Why Order by Start Date and Product Key?">
+  - **Consistent ordering**: Ensures product_key values don't change between view refreshes
+  - **Temporal ordering**: Products are numbered chronologically by when they were introduced
+  - **Deterministic**: Same data always produces same keys
+</Accordion>
+
+#### Current Products Filter
+
+```sql
+where pn.prd_end_dt is null
+```
+
+This filter ensures only currently active products appear in the dimension. Historical products (with end dates) are excluded.
+
+#### Example Query
+
+```sql
+SELECT 
+  product_key,
+  product_number,
+  product_name,
+  category,
+  subcategory,
+  product_line,
+  product_cost
+FROM gold.dim_product
+WHERE product_line = 'Mountain'
+ORDER BY product_cost DESC
+LIMIT 10;
+```
+
+## Fact Table
+
+### fact_sales
+
+The sales fact table contains transactional data with foreign keys to both dimensions:
+
+#### Schema
+
+| Column | Type | Description | Source |
+|--------|------|-------------|--------|
+| `order_number` | VARCHAR | Order identifier | silver.crm_sales_details.sls_ord_num |
+| `product_key` | INTEGER | FK to dim_product | gold.dim_product.product_key |
+| `customer_key` | INTEGER | FK to dim_customer | gold.dim_customer.customer_key |
+| `order_date` | DATE | Order date | silver.crm_sales_details.sls_ord_dt |
+| `shipphing_date` | DATE | Shipping date | silver.crm_sales_details.sls_ship_dt |
+| `sales_amount` | DECIMAL | Total sales value | silver.crm_sales_details.sls_sales |
+| `quantity` | INTEGER | Quantity sold | silver.crm_sales_details.sls_quantity |
+| `price` | DECIMAL | Unit price | silver.crm_sales_details.sls_price |
+
+#### Join Strategy
+
+```sql
+from silver.crm_sales_details si
+left join gold.dim_product pr
+  on si.sls_prd_key = pr.product_number
+left join gold.dim_customer cu
+  on si.sls_cust_id = cu.customer_id
+```
+
+<Note>
+  **LEFT JOIN** is used to preserve all sales records, even if:
+  - Product is not found (discontinued or invalid product_number)
+  - Customer is not found (deleted or invalid customer_id)
+  
+  This prevents data loss in the fact table.
+</Note>
+
+#### Example Query
+
+```sql
+SELECT 
+  order_number,
+  order_date,
+  product_key,
+  customer_key,
+  quantity,
+  price,
+  sales_amount
+FROM gold.fact_sales
+WHERE order_date >= '2023-01-01'
+LIMIT 10;
+```
+
+## Analytics Queries
+
+### Sales by Product Line
+
+```sql
+SELECT 
+  p.product_line,
+  COUNT(DISTINCT f.order_number) as order_count,
+  SUM(f.quantity) as total_quantity,
+  SUM(f.sales_amount) as total_sales,
+  ROUND(AVG(f.price), 2) as avg_price
+FROM gold.fact_sales f
+JOIN gold.dim_product p ON f.product_key = p.product_key
+GROUP BY p.product_line
+ORDER BY total_sales DESC;
+```
+
+### Customer Purchase Behavior
+
+```sql
+SELECT 
+  c.customer_number,
+  c.first_name || ' ' || c.last_name as customer_name,
+  c.gender,
+  c.marital_status,
+  COUNT(f.order_number) as order_count,
+  SUM(f.sales_amount) as lifetime_value,
+  ROUND(AVG(f.sales_amount), 2) as avg_order_value
+FROM gold.fact_sales f
+JOIN gold.dim_customer c ON f.customer_key = c.customer_key
+GROUP BY c.customer_number, c.first_name, c.last_name, c.gender, c.marital_status
+HAVING SUM(f.sales_amount) > 10000
+ORDER BY lifetime_value DESC
+LIMIT 20;
+```
+
+### Monthly Sales Trend
+
+```sql
+SELECT 
+  DATE_TRUNC('month', order_date) as month,
+  COUNT(DISTINCT order_number) as orders,
+  SUM(sales_amount) as revenue,
+  SUM(quantity) as units_sold,
+  COUNT(DISTINCT customer_key) as unique_customers
+FROM gold.fact_sales
+WHERE order_date >= DATE_TRUNC('year', CURRENT_DATE)
+GROUP BY DATE_TRUNC('month', order_date)
+ORDER BY month;
+```
+
+### Product Performance by Category
+
+```sql
+SELECT 
+  p.category,
+  p.subcategory,
+  COUNT(DISTINCT p.product_key) as product_count,
+  SUM(f.sales_amount) as total_sales,
+  SUM(f.quantity) as total_quantity,
+  ROUND(SUM(f.sales_amount) / NULLIF(SUM(f.quantity), 0), 2) as avg_unit_price
+FROM gold.fact_sales f
+JOIN gold.dim_product p ON f.product_key = p.product_key
+GROUP BY p.category, p.subcategory
+ORDER BY total_sales DESC;
+```
+
+### Customer Demographics Analysis
+
+```sql
+SELECT 
+  c.gender,
+  c.marital_status,
+  CASE 
+    WHEN EXTRACT(YEAR FROM AGE(c.birth_date)) < 25 THEN 'Under 25'
+    WHEN EXTRACT(YEAR FROM AGE(c.birth_date)) BETWEEN 25 AND 34 THEN '25-34'
+    WHEN EXTRACT(YEAR FROM AGE(c.birth_date)) BETWEEN 35 AND 44 THEN '35-44'
+    WHEN EXTRACT(YEAR FROM AGE(c.birth_date)) BETWEEN 45 AND 54 THEN '45-54'
+    ELSE '55+'
+  END as age_group,
+  COUNT(DISTINCT c.customer_key) as customer_count,
+  SUM(f.sales_amount) as total_sales,
+  ROUND(AVG(f.sales_amount), 2) as avg_transaction
+FROM gold.dim_customer c
+JOIN gold.fact_sales f ON c.customer_key = f.customer_key
+WHERE c.birth_date IS NOT NULL
+GROUP BY c.gender, c.marital_status, age_group
+ORDER BY total_sales DESC;
+```
+
+## View Refresh Behavior
+
+<Note>
+  Gold layer views are **not materialized**. They query Silver tables in real-time, so any updates to Silver data are immediately reflected in Gold views.
+</Note>
+
+### Performance Considerations
+
+<Accordion title="View vs Materialized View">
+  **Standard Views** (current implementation):
+  - ✅ Always up-to-date
+  - ✅ No storage overhead
+  - ❌ Query overhead on each access
+  
+  **Materialized Views** (alternative):
+  - ✅ Faster query performance
+  - ❌ Requires explicit refresh
+  - ❌ Storage overhead
+  - ❌ Data may be stale
+</Accordion>
+
+<Accordion title="Optimizing View Performance">
+  If Gold layer queries become slow:
+  1. Add indexes on Silver tables for join columns
+  2. Convert views to materialized views
+  3. Add refresh schedule after Silver ETL
+  4. Consider partitioning large fact tables
+</Accordion>
+
+## Data Quality Checks
+
+### Verify Dimension Row Counts
+
+```sql
+SELECT 
+  'dim_customer' as dimension,
+  COUNT(*) as row_count,
+  COUNT(DISTINCT customer_key) as unique_keys
+FROM gold.dim_customer
+UNION ALL
+SELECT 
+  'dim_product',
+  COUNT(*),
+  COUNT(DISTINCT product_key)
+FROM gold.dim_product;
+```
+
+### Check for Orphaned Facts
+
+```sql
+-- Sales with missing product
+SELECT COUNT(*)
+FROM gold.fact_sales
+WHERE product_key IS NULL;
+
+-- Sales with missing customer
+SELECT COUNT(*)
+FROM gold.fact_sales
+WHERE customer_key IS NULL;
+```
+
+### Validate Referential Integrity
+
+```sql
+-- Verify all product_keys in fact exist in dimension
+SELECT COUNT(*)
+FROM gold.fact_sales f
+LEFT JOIN gold.dim_product p ON f.product_key = p.product_key
+WHERE f.product_key IS NOT NULL AND p.product_key IS NULL;
+-- Should return 0
+```
+
+## Usage in BI Tools
+
+The Gold layer is designed for consumption by business intelligence tools:
+
+<CardGroup cols={2}>
+  <Card title="Tableau / Power BI" icon="chart-bar">
+    Connect directly to gold.fact_sales with automatic relationship detection
+  </Card>
+  <Card title="SQL Analytics" icon="code">
+    Write ad-hoc queries using standard star schema patterns
+  </Card>
+  <Card title="Looker / Metabase" icon="gauge">
+    Define metrics and dimensions using Gold layer views
+  </Card>
+  <Card title="Excel / Google Sheets" icon="table">
+    Export data via SQL queries or database connectors
+  </Card>
+</CardGroup>
+
+## Next Steps
+
+<Card title="ETL Overview" icon="book" href="/etl/overview">
+  Return to the ETL pipeline overview
+</Card>
+
+### Sample Dashboard Query
+
+Here's a comprehensive query for building a sales dashboard:
+
+```sql
+WITH sales_metrics AS (
+  SELECT 
+    DATE_TRUNC('month', f.order_date) as month,
+    p.product_line,
+    c.gender,
+    SUM(f.sales_amount) as revenue,
+    COUNT(DISTINCT f.order_number) as orders,
+    COUNT(DISTINCT f.customer_key) as customers,
+    SUM(f.quantity) as units
+  FROM gold.fact_sales f
+  JOIN gold.dim_product p ON f.product_key = p.product_key
+  JOIN gold.dim_customer c ON f.customer_key = c.customer_key
+  WHERE f.order_date >= CURRENT_DATE - INTERVAL '12 months'
+  GROUP BY DATE_TRUNC('month', f.order_date), p.product_line, c.gender
+)
+SELECT 
+  month,
+  product_line,
+  gender,
+  revenue,
+  orders,
+  customers,
+  units,
+  ROUND(revenue / NULLIF(orders, 0), 2) as avg_order_value,
+  ROUND(revenue / NULLIF(customers, 0), 2) as revenue_per_customer
+FROM sales_metrics
+ORDER BY month DESC, revenue DESC;
+```

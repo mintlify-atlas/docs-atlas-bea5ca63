@@ -1,0 +1,615 @@
+---
+title: 'Data Quality Management'
+description: 'Ensure data integrity with comprehensive quality checks, validation queries, and monitoring strategies for the SQL Data Warehouse'
+---
+
+## Overview
+
+Data quality is critical for analytical accuracy and business decision-making. This guide covers the quality assurance framework implemented across the Bronze, Silver, and Gold layers of the data warehouse.
+
+## Quality Framework
+
+The data warehouse implements quality checks at multiple stages:
+
+1. **Bronze Layer**: Raw data validation (format, completeness)
+2. **Silver Layer**: Cleansing validation (transformations, standardization)
+3. **Gold Layer**: Referential integrity and business rule validation
+
+## Silver Layer Quality Checks
+
+The Silver layer includes comprehensive quality validation after data cleansing. These checks are located in `~/workspace/source/tests/quality_check_silver.sql`.
+
+### Customer Information Validation
+
+<Accordion title="Duplicate and NULL Detection">
+  Check for duplicate or null customer IDs:
+
+  ```sql
+  -- Expected: No results (all customer IDs should be unique and non-null)
+  SELECT cst_id, COUNT(*) 
+  FROM silver.crm_cust_info
+  GROUP BY cst_id
+  HAVING COUNT(*) > 1 OR cst_id IS NULL;
+  ```
+
+  **Validation Rule**: Each customer must have a unique, non-null identifier.
+</Accordion>
+
+<Accordion title="Data Cleansing Validation">
+  Verify that unwanted spaces have been removed:
+
+  ```sql
+  -- Check customer keys
+  SELECT cst_key 
+  FROM silver.crm_cust_info
+  WHERE cst_key != TRIM(cst_key);
+
+  -- Check first names
+  SELECT cst_firstname
+  FROM silver.crm_cust_info
+  WHERE cst_firstname != TRIM(cst_firstname);
+
+  -- Check last names
+  SELECT cst_lastname
+  FROM silver.crm_cust_info
+  WHERE cst_lastname != TRIM(cst_lastname);
+  ```
+
+  **Expected Result**: No rows returned (all strings properly trimmed).
+</Accordion>
+
+<Accordion title="Data Standardization Checks">
+  Verify standardized values for categorical fields:
+
+  ```sql
+  -- Check marital status standardization
+  SELECT DISTINCT cst_marital_status
+  FROM silver.crm_cust_info;
+  -- Expected values: 'Single', 'Married', 'n/a'
+
+  -- Check gender standardization
+  SELECT DISTINCT cst_gndr
+  FROM silver.crm_cust_info;
+  -- Expected values: 'Male', 'Female', 'n/a'
+  ```
+
+  **Validation Rule**: All categorical values must use standardized naming conventions.
+</Accordion>
+
+### Product Information Validation
+
+<Accordion title="Primary Key Integrity">
+  Ensure product IDs are unique and non-null:
+
+  ```sql
+  -- Expected: No results
+  SELECT prd_id, COUNT(*) 
+  FROM silver.crm_prd_info
+  GROUP BY prd_id
+  HAVING COUNT(*) > 1 OR prd_id IS NULL;
+  ```
+</Accordion>
+
+<Accordion title="Product Name Cleansing">
+  Verify product names are properly trimmed:
+
+  ```sql
+  -- Expected: No results
+  SELECT prd_name
+  FROM silver.crm_prd_info
+  WHERE prd_name != TRIM(prd_name);
+  ```
+</Accordion>
+
+<Accordion title="Numeric Field Validation">
+  Check for invalid product costs:
+
+  ```sql
+  -- Expected: No results (no negative or null costs)
+  SELECT prd_cost
+  FROM silver.crm_prd_info
+  WHERE prd_cost < 0 OR prd_cost IS NULL;
+  ```
+
+  **Business Rule**: Product costs must be non-negative and non-null.
+</Accordion>
+
+<Accordion title="Product Line Standardization">
+  Verify product lines use standardized values:
+
+  ```sql
+  SELECT DISTINCT prd_line
+  FROM silver.crm_prd_info;
+  -- Expected: 'Mountain', 'Road', 'Other sales', 'Touring', 'n/a'
+  ```
+</Accordion>
+
+<Accordion title="Temporal Data Validation">
+  Ensure valid date ranges:
+
+  ```sql
+  -- Expected: No results (end dates must be after start dates)
+  SELECT *
+  FROM silver.crm_prd_info
+  WHERE prd_end_dt < prd_start_dt;
+  ```
+</Accordion>
+
+### Sales Details Validation
+
+<Accordion title="Date Format Validation">
+  Check for invalid date formats:
+
+  ```sql
+  -- Expected: No results
+  SELECT COALESCE(sls_due_dt, 0) AS sls_due_dt
+  FROM bronze.crm_sales_details
+  WHERE sls_due_dt <= 0 
+    OR LENGTH((sls_due_dt::TEXT)) != 8
+    OR sls_due_dt > 20500101
+    OR sls_due_dt < 19000101;
+  ```
+
+  **Validation Rule**: Dates must be 8-digit integers in YYYYMMDD format, between 1900-2050.
+</Accordion>
+
+<Accordion title="Date Logic Validation">
+  Verify chronological order of dates:
+
+  ```sql
+  -- Expected: No results
+  SELECT *
+  FROM silver.crm_sales_details
+  WHERE sls_ord_dt > sls_ship_dt
+    OR sls_ord_dt > sls_due_dt;
+  ```
+
+  **Business Rule**: Order date must be before or equal to shipping and due dates.
+</Accordion>
+
+<Accordion title="Sales Calculation Validation">
+  Verify sales amount matches quantity × price:
+
+  ```sql
+  -- Expected: No results
+  SELECT sls_sales, sls_quantity, sls_price
+  FROM silver.crm_sales_details
+  WHERE sls_sales != sls_quantity * sls_price
+    OR sls_sales IS NULL
+    OR sls_quantity IS NULL
+    OR sls_price IS NULL
+    OR sls_quantity <= 0
+    OR sls_price <= 0
+    OR sls_sales <= 0
+  ORDER BY sls_sales, sls_quantity, sls_price;
+  ```
+
+  **Business Rule**: Sales amount = Quantity × Price, all values must be positive.
+</Accordion>
+
+### ERP Data Validation
+
+<Accordion title="Customer Birthdate Validation">
+  Identify out-of-range birthdates:
+
+  ```sql
+  -- Expected: No results (birthdates between 1924 and today)
+  SELECT DISTINCT bdate
+  FROM silver.erp_cust_az12
+  WHERE bdate < '1924-01-01'
+    OR bdate > CURRENT_DATE;
+  ```
+
+  **Validation Rule**: Birthdates must be realistic (customer age 0-100 years).
+</Accordion>
+
+<Accordion title="Gender Standardization">
+  Check ERP gender field standardization:
+
+  ```sql
+  SELECT DISTINCT gen
+  FROM silver.erp_cust_az12;
+  -- Expected: 'Male', 'Female', 'n/a'
+  ```
+</Accordion>
+
+<Accordion title="Country Standardization">
+  Verify country name standardization:
+
+  ```sql
+  SELECT DISTINCT cntry
+  FROM silver.erp_loc_a101
+  ORDER BY cntry;
+  -- Expected: 'United States', 'Canada', 'Germany', 'n/a'
+  ```
+</Accordion>
+
+<Accordion title="Product Category Cleansing">
+  Check for unwanted spaces in product categories:
+
+  ```sql
+  -- Expected: No results
+  SELECT *
+  FROM silver.erp_px_cat_g1v2
+  WHERE cat != TRIM(cat)
+    OR subcat != TRIM(subcat)
+    OR manteinance != TRIM(manteinance);
+  ```
+</Accordion>
+
+## Gold Layer Quality Checks
+
+The Gold layer validates referential integrity and dimensional model consistency. These checks are in `~/workspace/source/tests/quality_check_gold.sql`.
+
+### Dimension Uniqueness
+
+<Accordion title="Customer Dimension Uniqueness">
+  Verify unique customer keys:
+
+  ```sql
+  -- Expected: 0 rows
+  SELECT customer_key, COUNT(*) AS duplicate_count
+  FROM gold.dim_customer
+  GROUP BY customer_key
+  HAVING COUNT(*) > 1;
+  ```
+
+  **Critical Rule**: Dimension keys must be unique for proper fact table joins.
+</Accordion>
+
+<Accordion title="Product Dimension Uniqueness">
+  Verify unique product keys:
+
+  ```sql
+  -- Expected: 0 rows
+  SELECT product_key, COUNT(*) AS duplicate_count
+  FROM gold.dim_product
+  GROUP BY product_key
+  HAVING COUNT(*) > 1;
+  ```
+</Accordion>
+
+### Referential Integrity
+
+<Accordion title="Fact-Dimension Integrity">
+  Check for orphaned fact records:
+
+  ```sql
+  -- Expected: No results (all foreign keys must have matching dimensions)
+  SELECT * 
+  FROM gold.fact_sales f 
+  LEFT JOIN gold.dim_customer cu ON cu.customer_key = f.customer_key
+  LEFT JOIN gold.dim_product p ON p.product_key = f.product_key
+  WHERE cu.customer_key IS NULL OR p.product_key IS NULL;
+  ```
+
+  **Critical Rule**: Every fact record must reference valid dimension records.
+</Accordion>
+
+## Silver Layer Cleansing Logic
+
+The Silver layer stored procedure (`proc_load_silver`) implements comprehensive data cleansing. Key transformations include:
+
+### Customer Data Cleansing
+
+<Accordion title="Whitespace Removal">
+  **Location**: `scripts/silver/proc_load_silver.sql:32-36`
+
+  ```sql
+  SELECT
+    cst_id, 
+    TRIM(cst_key), 
+    TRIM(cst_firstname) AS cst_firstname, 
+    TRIM(cst_lastname) AS cst_lastname,
+    ...
+  ```
+
+  **Purpose**: Remove leading/trailing spaces from string fields.
+</Accordion>
+
+<Accordion title="Value Standardization">
+  **Location**: `scripts/silver/proc_load_silver.sql:37-46`
+
+  ```sql
+  CASE UPPER(TRIM(cst_marital_status)) 
+    WHEN 'S' THEN 'Single' 
+    WHEN 'M' THEN 'Married' 
+    ELSE 'n/a'
+  END AS cst_marital_status,
+  CASE UPPER(TRIM(cst_gndr)) 
+    WHEN 'M' THEN 'Male' 
+    WHEN 'F' THEN 'Female' 
+    ELSE 'n/a'
+  END AS cst_gndr
+  ```
+
+  **Purpose**: Convert code values to readable labels.
+</Accordion>
+
+<Accordion title="Deduplication">
+  **Location**: `scripts/silver/proc_load_silver.sql:48-52`
+
+  ```sql
+  SELECT *, 
+    ROW_NUMBER() OVER (PARTITION BY cst_id ORDER BY cst_create_date DESC) AS flag_last
+  FROM bronze.crm_cust_info
+  WHERE flag_last = 1;
+  ```
+
+  **Purpose**: Keep only the most recent record for each customer.
+</Accordion>
+
+### Product Data Cleansing
+
+<Accordion title="Category ID Extraction">
+  **Location**: `scripts/silver/proc_load_silver.sql:84`
+
+  ```sql
+  REPLACE(SUBSTRING(TRIM(prd_key), 1, 5), '-','_') AS cat_id
+  ```
+
+  **Purpose**: Extract and normalize category identifier from product key.
+</Accordion>
+
+<Accordion title="NULL Handling">
+  **Location**: `scripts/silver/proc_load_silver.sql:87`
+
+  ```sql
+  COALESCE(prd_cost, 0) AS prd_cost
+  ```
+
+  **Purpose**: Replace NULL costs with 0 for consistent calculations.
+</Accordion>
+
+<Accordion title="Product Line Expansion">
+  **Location**: `scripts/silver/proc_load_silver.sql:88-94`
+
+  ```sql
+  CASE UPPER(TRIM(prd_line))
+    WHEN 'M' THEN 'Mountain'
+    WHEN 'R' THEN 'Road'
+    WHEN 'S' THEN 'Other sales'
+    WHEN 'T' THEN 'Touring'
+    ELSE 'n/a'
+  END AS prd_line
+  ```
+
+  **Purpose**: Expand product line codes to full names.
+</Accordion>
+
+### Sales Data Cleansing
+
+<Accordion title="Date Parsing">
+  **Location**: `scripts/silver/proc_load_silver.sql:133-152`
+
+  ```sql
+  CASE
+    WHEN sls_ord_dt IS NULL OR sls_ord_dt = 0 OR LENGTH(sls_ord_dt::TEXT) != 8
+    THEN NULL
+    ELSE TO_DATE(TRIM(sls_ord_dt::TEXT), 'YYYYMMDD')
+  END AS sls_ord_dt
+  ```
+
+  **Purpose**: Convert integer dates to proper DATE type with validation.
+</Accordion>
+
+<Accordion title="Sales Amount Calculation">
+  **Location**: `scripts/silver/proc_load_silver.sql:154-158`
+
+  ```sql
+  CASE 
+    WHEN sls_sales IS NULL OR sls_sales <= 0 OR sls_sales != sls_quantity * ABS(sls_price) 
+    THEN sls_quantity * ABS(sls_price)
+    ELSE sls_sales
+  END AS sls_sales
+  ```
+
+  **Purpose**: Recalculate sales amount if inconsistent with quantity × price.
+</Accordion>
+
+<Accordion title="Price Validation">
+  **Location**: `scripts/silver/proc_load_silver.sql:160-168`
+
+  ```sql
+  CASE 
+    WHEN sls_price IS NULL OR sls_price = 0 
+    THEN sls_sales / ABS(sls_quantity)
+    WHEN sls_price < 0 
+    THEN ABS(sls_price)
+    ELSE sls_price
+  END AS sls_price
+  ```
+
+  **Purpose**: Derive price from sales/quantity if missing, ensure positive values.
+</Accordion>
+
+### ERP Data Cleansing
+
+<Accordion title="Customer ID Normalization">
+  **Location**: `scripts/silver/proc_load_silver.sql:194-197`
+
+  ```sql
+  CASE 
+    WHEN cid LIKE 'NAS%' THEN SUBSTRING(cid, 4, LENGTH(cid))
+    ELSE cid
+  END AS cid
+  ```
+
+  **Purpose**: Remove 'NAS' prefix from certain customer IDs.
+</Accordion>
+
+<Accordion title="Birthdate Validation">
+  **Location**: `scripts/silver/proc_load_silver.sql:198-201`
+
+  ```sql
+  CASE 
+    WHEN bdate > CURRENT_DATE THEN NULL
+    ELSE bdate
+  END AS bdate
+  ```
+
+  **Purpose**: Invalidate future birthdates.
+</Accordion>
+
+<Accordion title="Country Name Standardization">
+  **Location**: `scripts/silver/proc_load_silver.sql:229-235`
+
+  ```sql
+  CASE 
+    WHEN TRIM(cntry) IN ('USA','US') THEN 'United States'
+    WHEN TRIM(cntry) = 'CAN' THEN 'Canada'
+    WHEN TRIM(cntry) = 'DE' THEN 'Germany'
+    WHEN TRIM(cntry) = '' OR TRIM(cntry) IS NULL THEN 'n/a'
+    ELSE TRIM(cntry)
+  END AS cntry
+  ```
+
+  **Purpose**: Standardize country codes to full names.
+</Accordion>
+
+## Monitoring Strategies
+
+### Automated Quality Reporting
+
+<Steps>
+  <Step title="Create quality check wrapper">
+    Create a script `run_quality_checks.sh`:
+
+    ```bash
+    #!/bin/bash
+    REPORT_FILE="/reports/quality_report_$(date +%Y%m%d).txt"
+    
+    echo "=== Data Quality Report - $(date) ===" > $REPORT_FILE
+    echo "" >> $REPORT_FILE
+    
+    echo "### Silver Layer Checks ###" >> $REPORT_FILE
+    docker exec datawarehouse psql -U dwh_admin -d datawarehouse \
+      -f /tests/quality_check_silver.sql >> $REPORT_FILE 2>&1
+    
+    echo "" >> $REPORT_FILE
+    echo "### Gold Layer Checks ###" >> $REPORT_FILE
+    docker exec datawarehouse psql -U dwh_admin -d datawarehouse \
+      -f /tests/quality_check_gold.sql >> $REPORT_FILE 2>&1
+    
+    # Check if any issues found
+    if grep -q "ERROR" $REPORT_FILE; then
+      echo "Quality issues detected!" | mail -s "DWH Quality Alert" admin@example.com
+    fi
+    ```
+  </Step>
+
+  <Step title="Schedule quality checks">
+    Run quality checks after each ETL batch:
+
+    ```bash
+    # After Silver layer load
+    call silver.load_silver();
+    \i /tests/quality_check_silver.sql
+
+    # After Gold layer refresh
+    \i /tests/quality_check_gold.sql
+    ```
+  </Step>
+</Steps>
+
+### Quality Metrics Dashboard
+
+Create views to track quality metrics over time:
+
+```sql
+-- Track record counts by layer
+CREATE VIEW quality.record_counts AS
+SELECT 
+  CURRENT_TIMESTAMP AS check_time,
+  'bronze.crm_cust_info' AS table_name,
+  COUNT(*) AS record_count
+FROM bronze.crm_cust_info
+UNION ALL
+SELECT 
+  CURRENT_TIMESTAMP,
+  'silver.crm_cust_info',
+  COUNT(*)
+FROM silver.crm_cust_info
+UNION ALL
+SELECT 
+  CURRENT_TIMESTAMP,
+  'gold.dim_customer',
+  COUNT(*)
+FROM gold.dim_customer;
+
+-- Track data quality issues
+CREATE TABLE quality.issue_log (
+  issue_id SERIAL PRIMARY KEY,
+  check_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  layer VARCHAR(10),
+  table_name VARCHAR(100),
+  issue_type VARCHAR(50),
+  issue_count INTEGER,
+  sample_data TEXT
+);
+```
+
+## Alerting Strategies
+
+<Warning>
+  Configure alerts for critical quality failures that require immediate attention.
+</Warning>
+
+### Critical Alerts
+
+1. **Referential Integrity Violations**
+   - Trigger: Orphaned fact records in Gold layer
+   - Action: Block downstream analytics, investigate immediately
+
+2. **Duplicate Primary Keys**
+   - Trigger: Non-unique dimension keys
+   - Action: Halt ETL process, review deduplication logic
+
+3. **Missing Required Fields**
+   - Trigger: NULL values in mandatory columns
+   - Action: Investigate source data quality
+
+### Warning Alerts
+
+1. **Data Standardization Issues**
+   - Trigger: Unexpected categorical values
+   - Action: Review and update standardization rules
+
+2. **Record Count Anomalies**
+   - Trigger: >20% deviation from expected counts
+   - Action: Verify source data completeness
+
+3. **Date Range Violations**
+   - Trigger: Dates outside expected ranges
+   - Action: Review date parsing logic
+
+## Best Practices
+
+<CardGroup cols={2}>
+  <Card title="Run checks after every ETL" icon="clock">
+    Execute quality checks immediately after data loads to catch issues early.
+  </Card>
+  
+  <Card title="Document expected values" icon="book">
+    Maintain a data dictionary with expected ranges and categorical values.
+  </Card>
+  
+  <Card title="Version control checks" icon="code-branch">
+    Keep quality check SQL in version control alongside ETL code.
+  </Card>
+  
+  <Card title="Sample failing records" icon="magnifying-glass">
+    When issues found, log sample records for faster debugging.
+  </Card>
+</CardGroup>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Deployment" icon="rocket" href="/operations/deployment">
+    Learn about deployment and configuration
+  </Card>
+  <Card title="Troubleshooting" icon="wrench" href="/operations/troubleshooting">
+    Debug quality check failures
+  </Card>
+</CardGroup>

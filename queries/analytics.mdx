@@ -1,0 +1,223 @@
+---
+title: 'Analytics Query Guide'
+description: 'Comprehensive guide to querying the data warehouse with joins and common analytics patterns'
+---
+
+## Overview
+
+The Gold layer provides clean, business-ready views for analytics. This guide demonstrates how to effectively query the data warehouse using fact and dimension tables.
+
+### Schema Structure
+
+The Gold layer consists of:
+- **Fact Table**: `gold.fact_sales` - Contains transactional sales data
+- **Dimension Tables**: `gold.dim_customer` and `gold.dim_product` - Contains descriptive attributes
+
+## Star Schema Pattern
+
+Our data warehouse follows a star schema design where the fact table connects to dimension tables through surrogate keys.
+
+```sql
+-- Basic star schema query structure
+SELECT 
+    c.first_name,
+    c.last_name,
+    p.product_name,
+    f.sales_amount,
+    f.quantity,
+    f.order_date
+FROM gold.fact_sales f
+INNER JOIN gold.dim_customer c ON f.customer_key = c.customer_key
+INNER JOIN gold.dim_product p ON f.product_key = p.product_key
+LIMIT 100;
+```
+
+<Tip>
+Always join fact tables to dimensions using the surrogate keys (`customer_key`, `product_key`) rather than natural keys for better performance.
+</Tip>
+
+## Common Analytics Patterns
+
+### Pattern 1: Aggregation with Dimensions
+
+Aggregate metrics from the fact table while grouping by dimensional attributes.
+
+<CodeGroup>
+
+```sql Total Sales by Category
+SELECT 
+    p.category,
+    p.subcategory,
+    COUNT(DISTINCT f.order_number) as order_count,
+    SUM(f.sales_amount) as total_sales,
+    SUM(f.quantity) as total_units_sold,
+    AVG(f.price) as avg_price
+FROM gold.fact_sales f
+INNER JOIN gold.dim_product p ON f.product_key = p.product_key
+GROUP BY p.category, p.subcategory
+ORDER BY total_sales DESC;
+```
+
+```sql Sales by Customer Demographics
+SELECT 
+    c.gender,
+    c.marital_status,
+    COUNT(DISTINCT c.customer_key) as customer_count,
+    COUNT(f.order_number) as total_orders,
+    SUM(f.sales_amount) as total_sales,
+    AVG(f.sales_amount) as avg_order_value
+FROM gold.fact_sales f
+INNER JOIN gold.dim_customer c ON f.customer_key = c.customer_key
+GROUP BY c.gender, c.marital_status
+ORDER BY total_sales DESC;
+```
+
+</CodeGroup>
+
+### Pattern 2: Time-Series Analysis
+
+Analyze trends over time using date fields from the fact table.
+
+```sql Monthly Sales Trend
+SELECT 
+    DATE_TRUNC('month', f.order_date) as month,
+    COUNT(DISTINCT f.order_number) as orders,
+    SUM(f.sales_amount) as revenue,
+    COUNT(DISTINCT f.customer_key) as unique_customers,
+    AVG(f.sales_amount) as avg_order_value
+FROM gold.fact_sales f
+GROUP BY DATE_TRUNC('month', f.order_date)
+ORDER BY month;
+```
+
+### Pattern 3: Multi-Dimension Analysis
+
+Combine multiple dimensions for detailed insights.
+
+```sql Product Performance by Customer Segment
+SELECT 
+    p.category,
+    p.product_line,
+    c.gender,
+    c.marital_status,
+    COUNT(DISTINCT f.order_number) as orders,
+    SUM(f.sales_amount) as total_sales,
+    SUM(f.quantity) as units_sold,
+    AVG(f.price) as avg_price
+FROM gold.fact_sales f
+INNER JOIN gold.dim_product p ON f.product_key = p.product_key
+INNER JOIN gold.dim_customer c ON f.customer_key = c.customer_key
+GROUP BY p.category, p.product_line, c.gender, c.marital_status
+HAVING SUM(f.sales_amount) > 10000
+ORDER BY total_sales DESC;
+```
+
+## Advanced Patterns
+
+<Accordion title="Window Functions for Rankings">
+
+```sql Top Products by Category
+WITH product_sales AS (
+    SELECT 
+        p.category,
+        p.product_name,
+        p.product_number,
+        SUM(f.sales_amount) as total_sales,
+        SUM(f.quantity) as total_quantity
+    FROM gold.fact_sales f
+    INNER JOIN gold.dim_product p ON f.product_key = p.product_key
+    GROUP BY p.category, p.product_name, p.product_number
+)
+SELECT 
+    category,
+    product_name,
+    total_sales,
+    total_quantity,
+    RANK() OVER (PARTITION BY category ORDER BY total_sales DESC) as sales_rank
+FROM product_sales
+QUALIFY sales_rank <= 5
+ORDER BY category, sales_rank;
+```
+
+</Accordion>
+
+<Accordion title="Cohort Analysis">
+
+```sql Customer Cohort by Join Month
+SELECT 
+    DATE_TRUNC('month', c.create_date) as cohort_month,
+    DATE_TRUNC('month', f.order_date) as order_month,
+    COUNT(DISTINCT f.customer_key) as customers,
+    SUM(f.sales_amount) as cohort_revenue
+FROM gold.fact_sales f
+INNER JOIN gold.dim_customer c ON f.customer_key = c.customer_key
+GROUP BY cohort_month, order_month
+ORDER BY cohort_month, order_month;
+```
+
+</Accordion>
+
+<Accordion title="Year-over-Year Comparison">
+
+```sql YoY Sales Comparison
+WITH sales_by_year AS (
+    SELECT 
+        EXTRACT(YEAR FROM f.order_date) as year,
+        p.category,
+        SUM(f.sales_amount) as annual_sales
+    FROM gold.fact_sales f
+    INNER JOIN gold.dim_product p ON f.product_key = p.product_key
+    GROUP BY EXTRACT(YEAR FROM f.order_date), p.category
+)
+SELECT 
+    curr.category,
+    curr.year as current_year,
+    curr.annual_sales as current_sales,
+    prev.annual_sales as previous_sales,
+    curr.annual_sales - prev.annual_sales as sales_difference,
+    ROUND((curr.annual_sales - prev.annual_sales) / prev.annual_sales * 100, 2) as growth_percentage
+FROM sales_by_year curr
+LEFT JOIN sales_by_year prev 
+    ON curr.category = prev.category 
+    AND curr.year = prev.year + 1
+WHERE prev.annual_sales IS NOT NULL
+ORDER BY curr.category, curr.year;
+```
+
+</Accordion>
+
+## Performance Tips
+
+<Tip>
+**Optimize Your Queries:**
+- Use surrogate keys (`customer_key`, `product_key`) for joins
+- Filter early in your WHERE clause
+- Use appropriate aggregation levels
+- Consider materialized views for frequently run queries
+</Tip>
+
+<Warning>
+**Avoid Common Pitfalls:**
+- Don't join on natural keys when surrogate keys are available
+- Be cautious with CROSS JOINs on large datasets
+- Always test queries on sample data first
+</Warning>
+
+## Query Validation
+
+Before running analytics queries in production, validate your joins:
+
+```sql Validate Foreign Key Relationships
+-- Check for orphaned records
+SELECT 
+    COUNT(*) as orphaned_records
+FROM gold.fact_sales f
+LEFT JOIN gold.dim_customer c ON f.customer_key = c.customer_key
+LEFT JOIN gold.dim_product p ON f.product_key = p.product_key
+WHERE c.customer_key IS NULL 
+   OR p.product_key IS NULL;
+```
+
+<Note>
+This query should return 0 rows. If it returns any records, there are data integrity issues that need to be addressed.
+</Note>

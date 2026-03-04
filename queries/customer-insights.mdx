@@ -1,0 +1,311 @@
+---
+title: 'Customer Insights Queries'
+description: 'Analyze customer behavior, segmentation, and purchasing patterns using dim_customer and fact_sales'
+---
+
+## Overview
+
+The `gold.dim_customer` table contains comprehensive customer information that can be joined with `gold.fact_sales` to derive valuable insights about customer behavior and preferences.
+
+## Customer Dimension Schema
+
+The `gold.dim_customer` view includes:
+
+- `customer_key` - Surrogate key (use for joins)
+- `customer_id` - Natural key
+- `customer_number` - Customer reference number
+- `first_name`, `last_name` - Customer name
+- `marital_status` - Marital status
+- `gender` - Gender information
+- `birth_date` - Date of birth
+- `create_date` - Customer registration date
+
+## Basic Customer Queries
+
+### Customer Profile Lookup
+
+```sql Single Customer Profile
+SELECT 
+    customer_key,
+    customer_id,
+    customer_number,
+    first_name,
+    last_name,
+    gender,
+    marital_status,
+    birth_date,
+    create_date,
+    EXTRACT(YEAR FROM AGE(CURRENT_DATE, birth_date)) as age
+FROM gold.dim_customer
+WHERE customer_id = 'C12345';
+```
+
+### Customer Demographics Overview
+
+<CodeGroup>
+
+```sql Gender Distribution
+SELECT 
+    gender,
+    COUNT(*) as customer_count,
+    ROUND(COUNT(*) * 100.0 / SUM(COUNT(*)) OVER (), 2) as percentage
+FROM gold.dim_customer
+GROUP BY gender
+ORDER BY customer_count DESC;
+```
+
+```sql Marital Status Distribution
+SELECT 
+    marital_status,
+    COUNT(*) as customer_count,
+    ROUND(COUNT(*) * 100.0 / SUM(COUNT(*)) OVER (), 2) as percentage
+FROM gold.dim_customer
+GROUP BY marital_status
+ORDER BY customer_count DESC;
+```
+
+```sql Age Group Distribution
+SELECT 
+    CASE 
+        WHEN EXTRACT(YEAR FROM AGE(CURRENT_DATE, birth_date)) < 25 THEN '18-24'
+        WHEN EXTRACT(YEAR FROM AGE(CURRENT_DATE, birth_date)) BETWEEN 25 AND 34 THEN '25-34'
+        WHEN EXTRACT(YEAR FROM AGE(CURRENT_DATE, birth_date)) BETWEEN 35 AND 44 THEN '35-44'
+        WHEN EXTRACT(YEAR FROM AGE(CURRENT_DATE, birth_date)) BETWEEN 45 AND 54 THEN '45-54'
+        WHEN EXTRACT(YEAR FROM AGE(CURRENT_DATE, birth_date)) BETWEEN 55 AND 64 THEN '55-64'
+        ELSE '65+'
+    END as age_group,
+    COUNT(*) as customer_count
+FROM gold.dim_customer
+WHERE birth_date IS NOT NULL
+GROUP BY age_group
+ORDER BY age_group;
+```
+
+</CodeGroup>
+
+## Customer Purchase Behavior
+
+### Customer Lifetime Value
+
+```sql Top Customers by Lifetime Value
+SELECT 
+    c.customer_key,
+    c.customer_number,
+    c.first_name,
+    c.last_name,
+    c.gender,
+    c.marital_status,
+    COUNT(DISTINCT f.order_number) as total_orders,
+    SUM(f.sales_amount) as lifetime_value,
+    AVG(f.sales_amount) as avg_order_value,
+    MIN(f.order_date) as first_order_date,
+    MAX(f.order_date) as last_order_date,
+    MAX(f.order_date) - MIN(f.order_date) as customer_tenure_days
+FROM gold.dim_customer c
+INNER JOIN gold.fact_sales f ON c.customer_key = f.customer_key
+GROUP BY c.customer_key, c.customer_number, c.first_name, c.last_name, c.gender, c.marital_status
+ORDER BY lifetime_value DESC
+LIMIT 100;
+```
+
+### Purchase Frequency Analysis
+
+```sql Customer Purchase Frequency Segments
+WITH customer_orders AS (
+    SELECT 
+        c.customer_key,
+        c.first_name,
+        c.last_name,
+        COUNT(DISTINCT f.order_number) as order_count,
+        SUM(f.sales_amount) as total_spent
+    FROM gold.dim_customer c
+    INNER JOIN gold.fact_sales f ON c.customer_key = f.customer_key
+    GROUP BY c.customer_key, c.first_name, c.last_name
+)
+SELECT 
+    CASE 
+        WHEN order_count = 1 THEN 'One-time Buyer'
+        WHEN order_count BETWEEN 2 AND 5 THEN 'Occasional Buyer'
+        WHEN order_count BETWEEN 6 AND 10 THEN 'Regular Buyer'
+        ELSE 'Frequent Buyer'
+    END as customer_segment,
+    COUNT(*) as customers,
+    AVG(order_count) as avg_orders,
+    AVG(total_spent) as avg_spent,
+    SUM(total_spent) as total_revenue
+FROM customer_orders
+GROUP BY customer_segment
+ORDER BY avg_orders;
+```
+
+## Customer Segmentation
+
+### RFM Analysis (Recency, Frequency, Monetary)
+
+<Tip>
+RFM analysis is a powerful method to segment customers based on their purchasing behavior.
+</Tip>
+
+```sql RFM Segmentation
+WITH rfm_calc AS (
+    SELECT 
+        c.customer_key,
+        c.customer_number,
+        c.first_name,
+        c.last_name,
+        CURRENT_DATE - MAX(f.order_date) as recency_days,
+        COUNT(DISTINCT f.order_number) as frequency,
+        SUM(f.sales_amount) as monetary_value
+    FROM gold.dim_customer c
+    INNER JOIN gold.fact_sales f ON c.customer_key = f.customer_key
+    GROUP BY c.customer_key, c.customer_number, c.first_name, c.last_name
+),
+rfm_scores AS (
+    SELECT 
+        *,
+        NTILE(5) OVER (ORDER BY recency_days) as r_score,
+        NTILE(5) OVER (ORDER BY frequency DESC) as f_score,
+        NTILE(5) OVER (ORDER BY monetary_value DESC) as m_score
+    FROM rfm_calc
+)
+SELECT 
+    customer_number,
+    first_name,
+    last_name,
+    recency_days,
+    frequency,
+    ROUND(monetary_value, 2) as monetary_value,
+    r_score,
+    f_score,
+    m_score,
+    CASE 
+        WHEN r_score >= 4 AND f_score >= 4 AND m_score >= 4 THEN 'Champions'
+        WHEN r_score >= 3 AND f_score >= 3 THEN 'Loyal Customers'
+        WHEN r_score >= 4 AND f_score <= 2 THEN 'New Customers'
+        WHEN r_score <= 2 AND f_score >= 3 THEN 'At Risk'
+        WHEN r_score <= 2 AND f_score <= 2 THEN 'Lost'
+        ELSE 'Regular'
+    END as customer_segment
+FROM rfm_scores
+ORDER BY monetary_value DESC;
+```
+
+### Demographic-Based Segmentation
+
+```sql Sales by Demographic Segment
+SELECT 
+    c.gender,
+    c.marital_status,
+    CASE 
+        WHEN EXTRACT(YEAR FROM AGE(CURRENT_DATE, c.birth_date)) < 35 THEN 'Young'
+        WHEN EXTRACT(YEAR FROM AGE(CURRENT_DATE, c.birth_date)) BETWEEN 35 AND 54 THEN 'Middle-Aged'
+        ELSE 'Senior'
+    END as age_segment,
+    COUNT(DISTINCT c.customer_key) as customers,
+    COUNT(DISTINCT f.order_number) as total_orders,
+    SUM(f.sales_amount) as total_revenue,
+    AVG(f.sales_amount) as avg_order_value,
+    SUM(f.quantity) as total_units
+FROM gold.dim_customer c
+INNER JOIN gold.fact_sales f ON c.customer_key = f.customer_key
+WHERE c.birth_date IS NOT NULL
+GROUP BY c.gender, c.marital_status, age_segment
+ORDER BY total_revenue DESC;
+```
+
+## Customer Retention Analysis
+
+### Active vs Inactive Customers
+
+```sql Customer Activity Status
+WITH last_purchase AS (
+    SELECT 
+        c.customer_key,
+        c.customer_number,
+        c.first_name,
+        c.last_name,
+        c.create_date,
+        MAX(f.order_date) as last_order_date,
+        COUNT(DISTINCT f.order_number) as total_orders,
+        SUM(f.sales_amount) as lifetime_value
+    FROM gold.dim_customer c
+    LEFT JOIN gold.fact_sales f ON c.customer_key = f.customer_key
+    GROUP BY c.customer_key, c.customer_number, c.first_name, c.last_name, c.create_date
+)
+SELECT 
+    CASE 
+        WHEN last_order_date IS NULL THEN 'Never Purchased'
+        WHEN CURRENT_DATE - last_order_date <= 90 THEN 'Active'
+        WHEN CURRENT_DATE - last_order_date BETWEEN 91 AND 180 THEN 'At Risk'
+        WHEN CURRENT_DATE - last_order_date BETWEEN 181 AND 365 THEN 'Dormant'
+        ELSE 'Churned'
+    END as activity_status,
+    COUNT(*) as customer_count,
+    AVG(total_orders) as avg_orders,
+    AVG(lifetime_value) as avg_lifetime_value,
+    SUM(lifetime_value) as total_value
+FROM last_purchase
+GROUP BY activity_status
+ORDER BY 
+    CASE activity_status
+        WHEN 'Active' THEN 1
+        WHEN 'At Risk' THEN 2
+        WHEN 'Dormant' THEN 3
+        WHEN 'Churned' THEN 4
+        ELSE 5
+    END;
+```
+
+### New Customer Acquisition Trends
+
+```sql Monthly New Customer Acquisition
+SELECT 
+    DATE_TRUNC('month', create_date) as signup_month,
+    COUNT(*) as new_customers,
+    COUNT(*) - LAG(COUNT(*)) OVER (ORDER BY DATE_TRUNC('month', create_date)) as month_over_month_change
+FROM gold.dim_customer
+GROUP BY DATE_TRUNC('month', create_date)
+ORDER BY signup_month;
+```
+
+## Cross-Selling Opportunities
+
+<Accordion title="Customers Who Haven't Purchased from Specific Categories">
+
+```sql Customers Without Category X Purchases
+WITH customer_categories AS (
+    SELECT DISTINCT
+        c.customer_key,
+        c.customer_number,
+        c.first_name,
+        c.last_name,
+        p.category
+    FROM gold.dim_customer c
+    INNER JOIN gold.fact_sales f ON c.customer_key = f.customer_key
+    INNER JOIN gold.dim_product p ON f.product_key = p.product_key
+)
+SELECT 
+    c.customer_key,
+    c.customer_number,
+    c.first_name,
+    c.last_name,
+    SUM(f.sales_amount) as lifetime_value,
+    COUNT(DISTINCT f.order_number) as total_orders
+FROM gold.dim_customer c
+INNER JOIN gold.fact_sales f ON c.customer_key = f.customer_key
+WHERE c.customer_key NOT IN (
+    SELECT customer_key 
+    FROM customer_categories 
+    WHERE category = 'Electronics'  -- Replace with target category
+)
+GROUP BY c.customer_key, c.customer_number, c.first_name, c.last_name
+HAVING SUM(f.sales_amount) > 1000  -- Target high-value customers
+ORDER BY lifetime_value DESC
+LIMIT 100;
+```
+
+</Accordion>
+
+<Note>
+Customer insights queries should be run regularly to monitor behavioral changes and identify opportunities for engagement.
+</Note>

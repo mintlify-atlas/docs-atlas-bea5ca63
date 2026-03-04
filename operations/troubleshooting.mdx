@@ -1,0 +1,859 @@
+---
+title: 'Troubleshooting Guide'
+description: 'Diagnose and resolve common issues with the SQL Data Warehouse, including ETL failures, connection problems, and data quality errors'
+---
+
+## Overview
+
+This guide helps you diagnose and resolve common issues encountered when operating the SQL Data Warehouse. Issues are organized by category with step-by-step resolution procedures.
+
+## Docker and Connectivity Issues
+
+### Container Won't Start
+
+<Accordion title="Error: Port already in use">
+  **Symptom**: `Error starting userland proxy: listen tcp4 0.0.0.0:5432: bind: address already in use`
+
+  **Diagnosis**:
+  ```bash
+  # Check what's using port 5432
+  sudo lsof -i :5432
+  # Or using netstat
+  netstat -tlnp | grep 5432
+  ```
+
+  **Resolution**:
+  
+  <Steps>
+    <Step title="Option 1: Stop conflicting service">
+      ```bash
+      # If PostgreSQL is already running locally
+      sudo systemctl stop postgresql
+      ```
+    </Step>
+
+    <Step title="Option 2: Change Docker port mapping">
+      Edit `docker-compose.yml`:
+      ```yaml
+      ports:
+        - "5433:5432"  # Use host port 5433 instead
+      ```
+      
+      Then restart:
+      ```bash
+      docker-compose up -d
+      ```
+    </Step>
+  </Steps>
+</Accordion>
+
+<Accordion title="Error: Permission denied on volume mount">
+  **Symptom**: `Error response from daemon: error while creating mount source path: mkdir permission denied`
+
+  **Diagnosis**:
+  ```bash
+  # Check directory permissions
+  ls -la datasets/
+  # Check SELinux status (if applicable)
+  getenforce
+  ```
+
+  **Resolution**:
+  ```bash
+  # Fix directory permissions
+  chmod 755 datasets/
+  
+  # If SELinux is enforcing, add context
+  chcon -Rt svirt_sandbox_file_t datasets/
+  
+  # Or add :z suffix to volume mount in docker-compose.yml
+  volumes:
+    - ./datasets:/datasets:ro,z
+  ```
+</Accordion>
+
+<Accordion title="Container starts but immediately exits">
+  **Symptom**: Container status shows "Exited (1) 2 seconds ago"
+
+  **Diagnosis**:
+  ```bash
+  # Check container logs
+  docker logs datawarehouse
+  
+  # Check last exit code
+  docker inspect datawarehouse --format='{{.State.ExitCode}}'
+  ```
+
+  **Common Causes**:
+  - Invalid environment variables
+  - Corrupted data volume
+  - PostgreSQL initialization failure
+
+  **Resolution**:
+  ```bash
+  # Remove and recreate container
+  docker-compose down
+  docker volume rm sql-data-warehouse_pg_data
+  docker-compose up -d
+  
+  # Watch logs during startup
+  docker-compose logs -f
+  ```
+
+  <Warning>
+    Removing the volume destroys all data. Ensure you have backups before proceeding.
+  </Warning>
+</Accordion>
+
+### Connection Failures
+
+<Accordion title="Error: Connection refused">
+  **Symptom**: `psql: error: connection to server at "localhost" (127.0.0.1), port 5432 failed: Connection refused`
+
+  **Diagnosis**:
+  ```bash
+  # Verify container is running
+  docker ps | grep datawarehouse
+  
+  # Check if PostgreSQL is listening
+  docker exec datawarehouse netstat -tlnp | grep 5432
+  
+  # Test from inside container
+  docker exec datawarehouse pg_isready -U dwh_admin
+  ```
+
+  **Resolution**:
+  
+  <Steps>
+    <Step title="Verify container health">
+      ```bash
+      docker inspect datawarehouse | grep -A 5 Health
+      ```
+    </Step>
+
+    <Step title="Check PostgreSQL logs">
+      ```bash
+      docker logs datawarehouse --tail 50
+      ```
+      Look for startup errors or configuration issues.
+    </Step>
+
+    <Step title="Restart container">
+      ```bash
+      docker-compose restart
+      ```
+    </Step>
+  </Steps>
+</Accordion>
+
+<Accordion title="Error: Authentication failed">
+  **Symptom**: `psql: error: FATAL: password authentication failed for user "dwh_admin"`
+
+  **Diagnosis**:
+  ```bash
+  # Check environment variables
+  docker exec datawarehouse env | grep POSTGRES
+  ```
+
+  **Resolution**:
+  
+  <Steps>
+    <Step title="Verify credentials in .env file">
+      ```bash
+      cat .env | grep POSTGRES
+      ```
+      Ensure credentials match what you're using to connect.
+    </Step>
+
+    <Step title="Reset password (if needed)">
+      ```bash
+      docker exec -it datawarehouse psql -U dwh_admin -d datawarehouse
+      ```
+      ```sql
+      ALTER USER dwh_admin WITH PASSWORD 'new_password';
+      ```
+      Update `.env` file accordingly.
+    </Step>
+
+    <Step title="Check pg_hba.conf configuration">
+      ```bash
+      docker exec datawarehouse cat /var/lib/postgresql/data/pg_hba.conf
+      ```
+      Ensure appropriate authentication methods are configured.
+    </Step>
+  </Steps>
+</Accordion>
+
+<Accordion title="Error: Too many connections">
+  **Symptom**: `FATAL: sorry, too many clients already`
+
+  **Diagnosis**:
+  ```sql
+  SELECT count(*) FROM pg_stat_activity;
+  SELECT max_connections FROM pg_settings WHERE name = 'max_connections';
+  ```
+
+  **Resolution**:
+  ```sql
+  -- View active connections
+  SELECT pid, usename, application_name, client_addr, state, query
+  FROM pg_stat_activity
+  WHERE state != 'idle';
+  
+  -- Terminate idle connections (be careful!)
+  SELECT pg_terminate_backend(pid)
+  FROM pg_stat_activity
+  WHERE state = 'idle' AND state_change < now() - interval '10 minutes';
+  
+  -- Increase max_connections (requires restart)
+  ALTER SYSTEM SET max_connections = 200;
+  SELECT pg_reload_conf();
+  ```
+  
+  Then restart container:
+  ```bash
+  docker-compose restart
+  ```
+</Accordion>
+
+## ETL Process Failures
+
+### Bronze Layer Load Failures
+
+<Accordion title="Error: File not found during COPY">
+  **Symptom**: `ERROR: could not open file "/datasets/source_crm/cust_info.csv" for reading: No such file or directory`
+
+  **Location**: `scripts/bronze/proc_load_bronze.sql:22-24`
+
+  **Diagnosis**:
+  ```bash
+  # Check if datasets are mounted
+  docker exec datawarehouse ls -la /datasets/
+  
+  # Verify file exists on host
+  ls -la ./datasets/source_crm/
+  ```
+
+  **Resolution**:
+  
+  <Steps>
+    <Step title="Verify volume mount">
+      ```bash
+      docker inspect datawarehouse | grep -A 10 Mounts
+      ```
+      Ensure `./datasets` is mounted to `/datasets` in container.
+    </Step>
+
+    <Step title="Check file paths">
+      Files must be in correct subdirectories:
+      ```
+      datasets/
+      ├── source_crm/
+      │   ├── cust_info.csv
+      │   ├── prd_info.csv
+      │   └── sales_details.csv
+      └── source_erp/
+          ├── CUST_AZ12.csv
+          ├── LOC_A101.csv
+          └── PX_CAT_G1V2.csv
+      ```
+    </Step>
+
+    <Step title="Recreate container with proper mounts">
+      ```bash
+      docker-compose down
+      docker-compose up -d
+      ```
+    </Step>
+  </Steps>
+</Accordion>
+
+<Accordion title="Error: CSV format error">
+  **Symptom**: `ERROR: invalid input syntax for type integer: "invalid_value"`
+
+  **Diagnosis**:
+  ```bash
+  # Examine CSV file structure
+  docker exec datawarehouse head -20 /datasets/source_crm/cust_info.csv
+  
+  # Check for encoding issues
+  file datasets/source_crm/cust_info.csv
+  ```
+
+  **Resolution**:
+  - Verify CSV files have headers
+  - Check for extra/missing columns
+  - Ensure data types match table definitions
+  - Convert file encoding if needed:
+    ```bash
+    iconv -f ISO-8859-1 -t UTF-8 input.csv > output.csv
+    ```
+</Accordion>
+
+<Accordion title="Error: Permission denied on CSV file">
+  **Symptom**: `ERROR: could not open file for reading: Permission denied`
+
+  **Diagnosis**:
+  ```bash
+  # Check file permissions
+  ls -l datasets/source_crm/
+  ```
+
+  **Resolution**:
+  ```bash
+  # Make files readable
+  chmod 644 datasets/source_crm/*.csv
+  chmod 644 datasets/source_erp/*.csv
+  
+  # Make directories readable and executable
+  chmod 755 datasets/source_crm/
+  chmod 755 datasets/source_erp/
+  ```
+</Accordion>
+
+### Silver Layer Transform Failures
+
+<Accordion title="Error: Division by zero">
+  **Symptom**: `ERROR: division by zero`
+
+  **Location**: Likely in sales price calculation (`scripts/silver/proc_load_silver.sql:164`)
+
+  **Diagnosis**:
+  ```sql
+  -- Find records with zero quantity
+  SELECT * FROM bronze.crm_sales_details
+  WHERE sls_quantity = 0;
+  ```
+
+  **Resolution**:
+  The procedure should handle this, but if it fails:
+  ```sql
+  -- Add additional CASE statement
+  CASE 
+    WHEN sls_price IS NULL OR sls_price = 0 
+    THEN CASE 
+      WHEN sls_quantity = 0 THEN 0
+      ELSE sls_sales / ABS(sls_quantity)
+    END
+    WHEN sls_price < 0 THEN ABS(sls_price)
+    ELSE sls_price
+  END AS sls_price
+  ```
+</Accordion>
+
+<Accordion title="Error: Invalid date format">
+  **Symptom**: `ERROR: invalid value "99999999" for "YYYYMMDD"`
+
+  **Location**: Date parsing in `scripts/silver/proc_load_silver.sql:133-152`
+
+  **Diagnosis**:
+  ```sql
+  -- Find invalid date values
+  SELECT DISTINCT sls_ord_dt
+  FROM bronze.crm_sales_details
+  WHERE sls_ord_dt > 20500101 OR sls_ord_dt < 19000101
+  ORDER BY sls_ord_dt;
+  ```
+
+  **Resolution**:
+  Add additional validation to the CASE statement:
+  ```sql
+  CASE
+    WHEN sls_ord_dt IS NULL 
+      OR sls_ord_dt = 0 
+      OR LENGTH(sls_ord_dt::TEXT) != 8
+      OR sls_ord_dt > 20500101  -- Future limit
+      OR sls_ord_dt < 19000101  -- Past limit
+    THEN NULL
+    ELSE TO_DATE(TRIM(sls_ord_dt::TEXT), 'YYYYMMDD')
+  END AS sls_ord_dt
+  ```
+</Accordion>
+
+<Accordion title="Procedure fails mid-execution">
+  **Symptom**: Some tables loaded, others empty
+
+  **Diagnosis**:
+  ```bash
+  # Check procedure logs
+  docker logs datawarehouse | grep "load silver"
+  ```
+
+  **Resolution**:
+  
+  <Steps>
+    <Step title="Identify failing step">
+      Look for the last "completed successfully" message in logs:
+      ```
+      NOTICE: Step [load silver.crm_cust_info] completed successfully (2 s)
+      ERROR: Error in step: load silver.crm_prd_info - ...
+      ```
+    </Step>
+
+    <Step title="Re-run procedure with detailed logging">
+      ```sql
+      SET client_min_messages TO NOTICE;
+      CALL silver.load_silver();
+      ```
+    </Step>
+
+    <Step title="Fix specific table issue">
+      Based on error, correct the data or logic in the specific table load.
+    </Step>
+  </Steps>
+</Accordion>
+
+### Gold Layer View Errors
+
+<Accordion title="Error: View dependency issues">
+  **Symptom**: `ERROR: cannot drop view dim_customer because other objects depend on it`
+
+  **Diagnosis**:
+  ```sql
+  -- Find dependent objects
+  SELECT dependent_ns.nspname, dependent_view.relname
+  FROM pg_depend 
+  JOIN pg_rewrite ON pg_depend.objid = pg_rewrite.oid
+  JOIN pg_class AS dependent_view ON pg_rewrite.ev_class = dependent_view.oid
+  JOIN pg_namespace AS dependent_ns ON dependent_view.relnamespace = dependent_ns.oid
+  WHERE pg_depend.refobjid = 'gold.dim_customer'::regclass;
+  ```
+
+  **Resolution**:
+  ```sql
+  -- Drop dependent views first
+  DROP VIEW IF EXISTS gold.fact_sales CASCADE;
+  DROP VIEW IF EXISTS gold.dim_customer CASCADE;
+  DROP VIEW IF EXISTS gold.dim_product CASCADE;
+  
+  -- Then recreate in correct order
+  \i scripts/gold/ddl_gold.sql
+  ```
+</Accordion>
+
+<Accordion title="Error: NULL values in dimension keys">
+  **Symptom**: `ERROR: null value in column "customer_key" violates not-null constraint`
+
+  **Diagnosis**:
+  ```sql
+  -- Check for NULL source keys
+  SELECT COUNT(*) FROM silver.crm_cust_info WHERE cst_id IS NULL;
+  ```
+
+  **Resolution**:
+  Ensure Silver layer quality checks pass before creating Gold views:
+  ```bash
+  docker exec -i datawarehouse psql -U dwh_admin -d datawarehouse \
+    < tests/quality_check_silver.sql
+  ```
+  
+  Fix any data quality issues found, then re-run Silver layer load.
+</Accordion>
+
+## Data Quality Issues
+
+### Debugging Quality Check Failures
+
+<Accordion title="Duplicate customer IDs found">
+  **Check**: `tests/quality_check_silver.sql:4-8`
+
+  **Diagnosis**:
+  ```sql
+  -- Identify duplicates
+  SELECT cst_id, COUNT(*), ARRAY_AGG(cst_key) AS keys
+  FROM silver.crm_cust_info
+  GROUP BY cst_id
+  HAVING COUNT(*) > 1;
+  ```
+
+  **Root Cause**: Deduplication logic failed in `proc_load_silver`
+
+  **Resolution**:
+  ```sql
+  -- Verify deduplication logic at line 48-52
+  -- Manually deduplicate if needed
+  DELETE FROM silver.crm_cust_info
+  WHERE ctid NOT IN (
+    SELECT MAX(ctid)
+    FROM silver.crm_cust_info
+    GROUP BY cst_id
+  );
+  ```
+</Accordion>
+
+<Accordion title="Sales amount calculation mismatch">
+  **Check**: `tests/quality_check_silver.sql:89-103`
+
+  **Diagnosis**:
+  ```sql
+  -- Find mismatched records
+  SELECT sls_ord_num, sls_sales, sls_quantity, sls_price,
+         sls_quantity * sls_price AS calculated_sales,
+         sls_sales - (sls_quantity * sls_price) AS difference
+  FROM silver.crm_sales_details
+  WHERE sls_sales != sls_quantity * sls_price;
+  ```
+
+  **Root Cause**: Logic error in `proc_load_silver.sql:154-158`
+
+  **Resolution**:
+  ```sql
+  -- Recalculate sales amount
+  UPDATE silver.crm_sales_details
+  SET sls_sales = sls_quantity * sls_price
+  WHERE sls_sales != sls_quantity * sls_price;
+  ```
+</Accordion>
+
+<Accordion title="Referential integrity violations">
+  **Check**: `tests/quality_check_gold.sql:22-27`
+
+  **Diagnosis**:
+  ```sql
+  -- Find orphaned fact records
+  SELECT f.order_number, f.customer_key, f.product_key
+  FROM gold.fact_sales f 
+  LEFT JOIN gold.dim_customer cu ON cu.customer_key = f.customer_key
+  LEFT JOIN gold.dim_product p ON p.product_key = f.product_key
+  WHERE cu.customer_key IS NULL OR p.product_key IS NULL
+  LIMIT 10;
+  ```
+
+  **Root Cause**: 
+  - Missing customers in Silver layer
+  - Missing products in Silver layer
+  - Join key mismatch
+
+  **Resolution**:
+  ```sql
+  -- Check for missing dimension source data
+  SELECT DISTINCT sls_cust_id
+  FROM silver.crm_sales_details
+  WHERE sls_cust_id NOT IN (SELECT cst_id FROM silver.crm_cust_info);
+  
+  SELECT DISTINCT sls_prd_key
+  FROM silver.crm_sales_details
+  WHERE sls_prd_key NOT IN (SELECT prd_key FROM silver.crm_prd_info);
+  ```
+  
+  Investigate missing source data and reload Bronze/Silver layers.
+</Accordion>
+
+## Log Analysis
+
+### Viewing Logs
+
+<Accordion title="Container logs">
+  ```bash
+  # View recent logs
+  docker logs datawarehouse --tail 100
+  
+  # Follow logs in real-time
+  docker logs -f datawarehouse
+  
+  # View logs with timestamps
+  docker logs -t datawarehouse
+  
+  # Export logs to file
+  docker logs datawarehouse > dwh_logs_$(date +%Y%m%d).log
+  ```
+</Accordion>
+
+<Accordion title="PostgreSQL logs">
+  ```bash
+  # View PostgreSQL logs inside container
+  docker exec datawarehouse ls -la /var/lib/postgresql/data/log/
+  
+  # View current log file
+  docker exec datawarehouse tail -100 /var/lib/postgresql/data/log/postgresql-*.log
+  
+  # Enable verbose logging
+  docker exec -it datawarehouse psql -U dwh_admin -d datawarehouse
+  ```
+  ```sql
+  ALTER SYSTEM SET log_min_messages = 'DEBUG1';
+  ALTER SYSTEM SET log_statement = 'all';
+  SELECT pg_reload_conf();
+  ```
+  
+  <Warning>
+    Verbose logging impacts performance. Use only for debugging.
+  </Warning>
+</Accordion>
+
+<Accordion title="ETL procedure logs">
+  ETL procedures use RAISE NOTICE for logging:
+  
+  ```sql
+  -- Enable notice messages
+  SET client_min_messages TO NOTICE;
+  
+  -- Run procedure and view logs
+  CALL bronze.load_bronze();
+  CALL silver.load_silver();
+  ```
+  
+  Expected output:
+  ```
+  NOTICE: [15:30:22] load bronze started
+  NOTICE: Step [load bronze.crm_cust_info] completed successfully (2 s)
+  NOTICE: Step [load bronze.crm_prd_info] completed successfully (1 s)
+  ...
+  NOTICE: load bronze finished in [15] seconds
+  ```
+</Accordion>
+
+### Error Message Patterns
+
+<Accordion title="Common error signatures">
+  | Error Pattern | Likely Cause | First Check |
+  |--------------|--------------|-------------|
+  | `relation "..." does not exist` | Schema/table not created | Run DDL scripts |
+  | `column "..." does not exist` | Schema mismatch | Verify table definitions |
+  | `syntax error at or near "..."` | SQL syntax issue | Check SQL file for typos |
+  | `could not open file "..."` | File path or permission issue | Verify volume mounts |
+  | `out of memory` | Insufficient resources | Check container resources |
+  | `deadlock detected` | Concurrent transaction conflict | Review locking strategy |
+  | `too many connections` | Connection leak | Check connection pooling |
+</Accordion>
+
+## Permission Issues
+
+### Schema Permissions
+
+<Accordion title="Error: Permission denied for schema">
+  **Symptom**: `ERROR: permission denied for schema silver`
+
+  **Diagnosis**:
+  ```sql
+  -- Check schema permissions
+  SELECT nspname, nspowner::regrole
+  FROM pg_namespace
+  WHERE nspname IN ('bronze', 'silver', 'gold');
+  
+  -- Check current user privileges
+  SELECT * FROM pg_roles WHERE rolname = current_user;
+  ```
+
+  **Resolution**:
+  ```sql
+  -- Grant schema usage
+  GRANT USAGE ON SCHEMA bronze TO app_user;
+  GRANT USAGE ON SCHEMA silver TO app_user;
+  GRANT USAGE ON SCHEMA gold TO app_user;
+  
+  -- Grant table access
+  GRANT SELECT ON ALL TABLES IN SCHEMA bronze TO app_user;
+  GRANT SELECT ON ALL TABLES IN SCHEMA silver TO app_user;
+  GRANT SELECT ON ALL TABLES IN SCHEMA gold TO app_user;
+  
+  -- Grant future table access
+  ALTER DEFAULT PRIVILEGES IN SCHEMA gold
+  GRANT SELECT ON TABLES TO app_user;
+  ```
+</Accordion>
+
+<Accordion title="Error: Permission denied for procedure">
+  **Symptom**: `ERROR: permission denied for function load_silver`
+
+  **Resolution**:
+  ```sql
+  -- Grant execute permission
+  GRANT EXECUTE ON PROCEDURE bronze.load_bronze() TO app_user;
+  GRANT EXECUTE ON PROCEDURE silver.load_silver() TO app_user;
+  ```
+  
+  Note: The procedures already include `GRANT EXECUTE TO PUBLIC` at lines:
+  - `scripts/bronze/proc_load_bronze.sql:142`
+  - `scripts/silver/proc_load_silver.sql:285`
+</Accordion>
+
+## Performance Issues
+
+<Accordion title="Slow query performance">
+  **Diagnosis**:
+  ```sql
+  -- Enable query timing
+  \timing on
+  
+  -- Analyze query plan
+  EXPLAIN ANALYZE
+  SELECT * FROM gold.fact_sales
+  WHERE order_date > '2025-01-01';
+  
+  -- Check for missing indexes
+  SELECT schemaname, tablename, indexname
+  FROM pg_indexes
+  WHERE schemaname IN ('bronze', 'silver', 'gold');
+  ```
+
+  **Resolution**:
+  ```sql
+  -- Create indexes on frequently queried columns
+  CREATE INDEX idx_fact_sales_order_date ON gold.fact_sales (order_date);
+  CREATE INDEX idx_fact_sales_customer ON gold.fact_sales (customer_key);
+  CREATE INDEX idx_fact_sales_product ON gold.fact_sales (product_key);
+  
+  -- Update statistics
+  ANALYZE gold.fact_sales;
+  ```
+</Accordion>
+
+<Accordion title="ETL procedure runs slowly">
+  **Diagnosis**:
+  ```sql
+  -- Check table sizes
+  SELECT schemaname, tablename, 
+         pg_size_pretty(pg_total_relation_size(schemaname||'.'||tablename)) AS size
+  FROM pg_tables
+  WHERE schemaname IN ('bronze', 'silver', 'gold')
+  ORDER BY pg_total_relation_size(schemaname||'.'||tablename) DESC;
+  ```
+
+  **Resolution**:
+  - Increase container resources (CPU, memory)
+  - Optimize queries in procedures
+  - Consider batch processing for large datasets
+  - Run VACUUM ANALYZE after large data loads
+</Accordion>
+
+## Recovery Procedures
+
+### Full Database Recovery
+
+<Steps>
+  <Step title="Stop the container">
+    ```bash
+    docker-compose stop
+    ```
+  </Step>
+
+  <Step title="Remove corrupted volume">
+    ```bash
+    docker volume rm sql-data-warehouse_pg_data
+    ```
+  </Step>
+
+  <Step title="Start fresh container">
+    ```bash
+    docker-compose up -d
+    ```
+  </Step>
+
+  <Step title="Restore from backup">
+    ```bash
+    gunzip -c /backups/latest_backup.sql.gz | \
+      docker exec -i datawarehouse pg_restore -U dwh_admin -d datawarehouse
+    ```
+  </Step>
+
+  <Step title="Verify data integrity">
+    ```bash
+    docker exec -i datawarehouse psql -U dwh_admin -d datawarehouse \
+      < tests/quality_check_silver.sql
+    docker exec -i datawarehouse psql -U dwh_admin -d datawarehouse \
+      < tests/quality_check_gold.sql
+    ```
+  </Step>
+</Steps>
+
+### Incremental Recovery
+
+<Steps>
+  <Step title="Identify affected layer">
+    Determine which layer (Bronze/Silver/Gold) has issues.
+  </Step>
+
+  <Step title="Reload specific layer">
+    ```bash
+    # Reload Bronze
+    docker exec -it datawarehouse psql -U dwh_admin -d datawarehouse \
+      -c "CALL bronze.load_bronze();"
+    
+    # Reload Silver
+    docker exec -it datawarehouse psql -U dwh_admin -d datawarehouse \
+      -c "CALL silver.load_silver();"
+    
+    # Recreate Gold views
+    docker exec -i datawarehouse psql -U dwh_admin -d datawarehouse \
+      < scripts/gold/ddl_gold.sql
+    ```
+  </Step>
+
+  <Step title="Verify fix">
+    Run appropriate quality checks.
+  </Step>
+</Steps>
+
+## Getting Help
+
+### Collecting Diagnostic Information
+
+When seeking help, collect this information:
+
+```bash
+#!/bin/bash
+# diagnostic_info.sh
+
+echo "=== Docker Version ==="
+docker --version
+docker-compose --version
+
+echo "\n=== Container Status ==="
+docker ps -a | grep datawarehouse
+
+echo "\n=== Container Logs (last 100 lines) ==="
+docker logs datawarehouse --tail 100
+
+echo "\n=== Volume Information ==="
+docker volume inspect sql-data-warehouse_pg_data
+
+echo "\n=== PostgreSQL Version ==="
+docker exec datawarehouse psql -U dwh_admin -d datawarehouse -c "SELECT version();"
+
+echo "\n=== Schema Information ==="
+docker exec datawarehouse psql -U dwh_admin -d datawarehouse -c "
+  SELECT schema_name 
+  FROM information_schema.schemata 
+  WHERE schema_name IN ('bronze', 'silver', 'gold');
+"
+
+echo "\n=== Table Counts ==="
+docker exec datawarehouse psql -U dwh_admin -d datawarehouse -c "
+  SELECT schemaname, tablename, 
+         (SELECT COUNT(*) FROM schemaname||'.'||tablename) AS row_count
+  FROM pg_tables
+  WHERE schemaname IN ('bronze', 'silver', 'gold')
+  ORDER BY schemaname, tablename;
+"
+```
+
+Run and share output:
+```bash
+chmod +x diagnostic_info.sh
+./diagnostic_info.sh > diagnostic_report.txt
+```
+
+### Common Resolution Checklist
+
+Before seeking help, verify:
+
+- [ ] Container is running: `docker ps | grep datawarehouse`
+- [ ] Can connect to database: `docker exec datawarehouse pg_isready`
+- [ ] Environment variables are set: `cat .env`
+- [ ] Volumes are mounted: `docker inspect datawarehouse | grep Mounts`
+- [ ] CSV files exist: `docker exec datawarehouse ls /datasets/`
+- [ ] Schemas exist: Check using SQL query above
+- [ ] Recent logs reviewed: `docker logs datawarehouse --tail 50`
+- [ ] Quality checks run: Execute test SQL files
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Deployment" icon="rocket" href="/operations/deployment">
+    Review deployment best practices
+  </Card>
+  <Card title="Data Quality" icon="shield-check" href="/operations/data-quality">
+    Learn about quality assurance
+  </Card>
+</CardGroup>

@@ -1,0 +1,362 @@
+---
+title: 'Product Performance Queries'
+description: 'Analyze product sales, category trends, and inventory insights using dim_product and fact_sales'
+---
+
+## Overview
+
+The `gold.dim_product` table contains product catalog information that can be joined with `gold.fact_sales` to analyze product performance, identify bestsellers, and optimize inventory decisions.
+
+## Product Dimension Schema
+
+The `gold.dim_product` view includes:
+
+- `product_key` - Surrogate key (use for joins)
+- `product_id` - Natural key
+- `product_number` - Product reference number
+- `product_name` - Product name
+- `category_id` - Category identifier
+- `category` - Product category
+- `subcategory` - Product subcategory
+- `manteinance` - Maintenance classification
+- `product_cost` - Product cost
+- `product_line` - Product line
+- `product_start_date` - Product launch date
+
+## Basic Product Queries
+
+### Product Catalog Overview
+
+<CodeGroup>
+
+```sql Active Products by Category
+SELECT 
+    category,
+    subcategory,
+    COUNT(*) as product_count,
+    AVG(product_cost) as avg_cost,
+    MIN(product_cost) as min_cost,
+    MAX(product_cost) as max_cost
+FROM gold.dim_product
+GROUP BY category, subcategory
+ORDER BY category, subcategory;
+```
+
+```sql Products by Product Line
+SELECT 
+    product_line,
+    COUNT(*) as product_count,
+    AVG(product_cost) as avg_cost
+FROM gold.dim_product
+GROUP BY product_line
+ORDER BY product_count DESC;
+```
+
+```sql Recently Launched Products
+SELECT 
+    product_number,
+    product_name,
+    category,
+    subcategory,
+    product_line,
+    product_cost,
+    product_start_date
+FROM gold.dim_product
+WHERE product_start_date >= CURRENT_DATE - INTERVAL '6 months'
+ORDER BY product_start_date DESC;
+```
+
+</CodeGroup>
+
+## Product Sales Performance
+
+### Top Selling Products
+
+```sql Top 50 Products by Revenue
+SELECT 
+    p.product_number,
+    p.product_name,
+    p.category,
+    p.subcategory,
+    p.product_line,
+    COUNT(DISTINCT f.order_number) as order_count,
+    SUM(f.quantity) as units_sold,
+    SUM(f.sales_amount) as total_revenue,
+    AVG(f.price) as avg_selling_price,
+    p.product_cost,
+    SUM(f.sales_amount) - (SUM(f.quantity) * p.product_cost) as gross_profit
+FROM gold.dim_product p
+INNER JOIN gold.fact_sales f ON p.product_key = f.product_key
+GROUP BY p.product_number, p.product_name, p.category, p.subcategory, p.product_line, p.product_cost
+ORDER BY total_revenue DESC
+LIMIT 50;
+```
+
+### Product Performance Metrics
+
+```sql Comprehensive Product Performance
+WITH product_metrics AS (
+    SELECT 
+        p.product_key,
+        p.product_number,
+        p.product_name,
+        p.category,
+        p.subcategory,
+        COUNT(DISTINCT f.order_number) as orders,
+        COUNT(DISTINCT f.customer_key) as unique_customers,
+        SUM(f.quantity) as units_sold,
+        SUM(f.sales_amount) as revenue,
+        AVG(f.price) as avg_price,
+        MIN(f.order_date) as first_sale_date,
+        MAX(f.order_date) as last_sale_date
+    FROM gold.dim_product p
+    LEFT JOIN gold.fact_sales f ON p.product_key = f.product_key
+    GROUP BY p.product_key, p.product_number, p.product_name, p.category, p.subcategory
+)
+SELECT 
+    product_number,
+    product_name,
+    category,
+    subcategory,
+    orders,
+    unique_customers,
+    units_sold,
+    ROUND(revenue, 2) as revenue,
+    ROUND(avg_price, 2) as avg_price,
+    ROUND(revenue / NULLIF(units_sold, 0), 2) as revenue_per_unit,
+    first_sale_date,
+    last_sale_date,
+    CURRENT_DATE - last_sale_date as days_since_last_sale
+FROM product_metrics
+WHERE units_sold > 0
+ORDER BY revenue DESC;
+```
+
+<Tip>
+Use `NULLIF(units_sold, 0)` to avoid division by zero errors when calculating per-unit metrics.
+</Tip>
+
+## Category Analysis
+
+### Category Performance Comparison
+
+```sql Sales Performance by Category
+SELECT 
+    p.category,
+    COUNT(DISTINCT p.product_key) as product_count,
+    COUNT(DISTINCT f.order_number) as order_count,
+    COUNT(DISTINCT f.customer_key) as customer_count,
+    SUM(f.quantity) as total_units_sold,
+    SUM(f.sales_amount) as total_revenue,
+    AVG(f.sales_amount) as avg_order_value,
+    AVG(f.price) as avg_price,
+    SUM(f.sales_amount) / NULLIF(COUNT(DISTINCT f.customer_key), 0) as revenue_per_customer
+FROM gold.dim_product p
+INNER JOIN gold.fact_sales f ON p.product_key = f.product_key
+GROUP BY p.category
+ORDER BY total_revenue DESC;
+```
+
+### Subcategory Deep Dive
+
+```sql Subcategory Performance Details
+SELECT 
+    p.category,
+    p.subcategory,
+    COUNT(DISTINCT p.product_key) as products,
+    SUM(f.quantity) as units_sold,
+    SUM(f.sales_amount) as revenue,
+    ROUND(SUM(f.sales_amount) * 100.0 / SUM(SUM(f.sales_amount)) OVER (PARTITION BY p.category), 2) as pct_of_category_revenue,
+    AVG(f.price) as avg_price
+FROM gold.dim_product p
+INNER JOIN gold.fact_sales f ON p.product_key = f.product_key
+GROUP BY p.category, p.subcategory
+ORDER BY p.category, revenue DESC;
+```
+
+## Product Profitability Analysis
+
+### Gross Margin by Product
+
+```sql Product Profitability Analysis
+SELECT 
+    p.product_number,
+    p.product_name,
+    p.category,
+    p.product_cost,
+    AVG(f.price) as avg_selling_price,
+    SUM(f.quantity) as units_sold,
+    SUM(f.sales_amount) as total_revenue,
+    SUM(f.quantity) * p.product_cost as total_cost,
+    SUM(f.sales_amount) - (SUM(f.quantity) * p.product_cost) as gross_profit,
+    ROUND((SUM(f.sales_amount) - (SUM(f.quantity) * p.product_cost)) / NULLIF(SUM(f.sales_amount), 0) * 100, 2) as gross_margin_pct
+FROM gold.dim_product p
+INNER JOIN gold.fact_sales f ON p.product_key = f.product_key
+GROUP BY p.product_number, p.product_name, p.category, p.product_cost
+HAVING SUM(f.quantity) > 10  -- Minimum volume threshold
+ORDER BY gross_profit DESC;
+```
+
+### Category Profitability
+
+```sql Profitability by Category
+SELECT 
+    p.category,
+    COUNT(DISTINCT p.product_key) as product_count,
+    SUM(f.sales_amount) as total_revenue,
+    SUM(f.quantity * p.product_cost) as total_cost,
+    SUM(f.sales_amount) - SUM(f.quantity * p.product_cost) as gross_profit,
+    ROUND((SUM(f.sales_amount) - SUM(f.quantity * p.product_cost)) / NULLIF(SUM(f.sales_amount), 0) * 100, 2) as margin_pct
+FROM gold.dim_product p
+INNER JOIN gold.fact_sales f ON p.product_key = f.product_key
+GROUP BY p.category
+ORDER BY gross_profit DESC;
+```
+
+## Product Trends and Rankings
+
+<Accordion title="Monthly Product Performance Rankings">
+
+```sql Monthly Top Products
+WITH monthly_sales AS (
+    SELECT 
+        DATE_TRUNC('month', f.order_date) as month,
+        p.product_number,
+        p.product_name,
+        p.category,
+        SUM(f.sales_amount) as monthly_revenue,
+        SUM(f.quantity) as monthly_units
+    FROM gold.fact_sales f
+    INNER JOIN gold.dim_product p ON f.product_key = p.product_key
+    GROUP BY DATE_TRUNC('month', f.order_date), p.product_number, p.product_name, p.category
+)
+SELECT 
+    month,
+    product_name,
+    category,
+    monthly_revenue,
+    monthly_units,
+    RANK() OVER (PARTITION BY month ORDER BY monthly_revenue DESC) as revenue_rank
+FROM monthly_sales
+QUALIFY revenue_rank <= 10
+ORDER BY month DESC, revenue_rank;
+```
+
+</Accordion>
+
+<Accordion title="Product Performance Growth">
+
+```sql Product Sales Growth Analysis
+WITH current_period AS (
+    SELECT 
+        p.product_key,
+        p.product_number,
+        p.product_name,
+        SUM(f.sales_amount) as current_revenue,
+        SUM(f.quantity) as current_units
+    FROM gold.dim_product p
+    INNER JOIN gold.fact_sales f ON p.product_key = f.product_key
+    WHERE f.order_date >= CURRENT_DATE - INTERVAL '90 days'
+    GROUP BY p.product_key, p.product_number, p.product_name
+),
+previous_period AS (
+    SELECT 
+        p.product_key,
+        SUM(f.sales_amount) as previous_revenue,
+        SUM(f.quantity) as previous_units
+    FROM gold.dim_product p
+    INNER JOIN gold.fact_sales f ON p.product_key = f.product_key
+    WHERE f.order_date >= CURRENT_DATE - INTERVAL '180 days'
+      AND f.order_date < CURRENT_DATE - INTERVAL '90 days'
+    GROUP BY p.product_key
+)
+SELECT 
+    c.product_number,
+    c.product_name,
+    c.current_revenue,
+    p.previous_revenue,
+    c.current_revenue - p.previous_revenue as revenue_change,
+    ROUND((c.current_revenue - p.previous_revenue) / NULLIF(p.previous_revenue, 0) * 100, 2) as revenue_growth_pct,
+    c.current_units,
+    p.previous_units,
+    c.current_units - p.previous_units as units_change
+FROM current_period c
+LEFT JOIN previous_period p ON c.product_key = p.product_key
+WHERE p.previous_revenue > 0
+ORDER BY revenue_growth_pct DESC
+LIMIT 50;
+```
+
+</Accordion>
+
+## Slow-Moving and Dormant Products
+
+### Inventory Optimization Candidates
+
+```sql Slow-Moving Products
+WITH product_velocity AS (
+    SELECT 
+        p.product_key,
+        p.product_number,
+        p.product_name,
+        p.category,
+        p.subcategory,
+        p.product_start_date,
+        MAX(f.order_date) as last_sale_date,
+        COUNT(DISTINCT f.order_number) as order_count,
+        SUM(f.quantity) as total_units_sold,
+        SUM(f.sales_amount) as total_revenue
+    FROM gold.dim_product p
+    LEFT JOIN gold.fact_sales f ON p.product_key = f.product_key
+    GROUP BY p.product_key, p.product_number, p.product_name, p.category, p.subcategory, p.product_start_date
+)
+SELECT 
+    product_number,
+    product_name,
+    category,
+    subcategory,
+    product_start_date,
+    last_sale_date,
+    CURRENT_DATE - last_sale_date as days_since_last_sale,
+    order_count,
+    total_units_sold,
+    ROUND(total_revenue, 2) as total_revenue,
+    CASE 
+        WHEN last_sale_date IS NULL THEN 'Never Sold'
+        WHEN CURRENT_DATE - last_sale_date > 180 THEN 'Dormant'
+        WHEN CURRENT_DATE - last_sale_date > 90 THEN 'Slow Moving'
+        WHEN order_count < 5 THEN 'Low Volume'
+        ELSE 'Active'
+    END as product_status
+FROM product_velocity
+WHERE last_sale_date IS NULL 
+   OR CURRENT_DATE - last_sale_date > 90
+   OR order_count < 5
+ORDER BY days_since_last_sale DESC NULLS FIRST;
+```
+
+<Warning>
+Products classified as "Dormant" or "Never Sold" may be candidates for discontinuation or promotional campaigns.
+</Warning>
+
+## Product Line Performance
+
+```sql Product Line Comparison
+SELECT 
+    p.product_line,
+    COUNT(DISTINCT p.product_key) as product_count,
+    COUNT(DISTINCT f.order_number) as order_count,
+    SUM(f.quantity) as units_sold,
+    SUM(f.sales_amount) as total_revenue,
+    AVG(f.sales_amount) as avg_order_value,
+    SUM(f.sales_amount) - SUM(f.quantity * p.product_cost) as gross_profit,
+    ROUND((SUM(f.sales_amount) - SUM(f.quantity * p.product_cost)) / NULLIF(SUM(f.sales_amount), 0) * 100, 2) as margin_pct
+FROM gold.dim_product p
+INNER JOIN gold.fact_sales f ON p.product_key = f.product_key
+GROUP BY p.product_line
+ORDER BY total_revenue DESC;
+```
+
+<Note>
+Regularly review product performance metrics to identify opportunities for portfolio optimization and strategic planning.
+</Note>

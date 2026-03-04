@@ -1,0 +1,319 @@
+---
+title: 'Bronze Layer'
+description: 'Raw data ingestion tables from CRM and ERP source systems'
+---
+
+## Overview
+
+The **Bronze layer** serves as the initial landing zone for raw data from source systems. Data is loaded with minimal transformation to preserve the original structure and values.
+
+<Info>
+  Bronze tables store data exactly as received from source systems, acting as a historical archive and enabling reprocessing if needed.
+</Info>
+
+## Design Principles
+
+<CardGroup cols={2}>
+  <Card title="Minimal Transformation" icon="inbox">
+    Data loaded as-is without cleansing or validation
+  </Card>
+  <Card title="Source Preservation" icon="vault">
+    Maintains exact copy of source system data
+  </Card>
+  <Card title="Schema on Read" icon="book-open">
+    Allows flexible interpretation downstream
+  </Card>
+  <Card title="Audit Foundation" icon="clock">
+    Enables data lineage and troubleshooting
+  </Card>
+</CardGroup>
+
+## Table Catalog
+
+The Bronze layer contains six tables from two source systems:
+
+<Tabs>
+  <Tab title="CRM Tables">
+    - `bronze.crm_cust_info` - Customer master data
+    - `bronze.crm_prd_info` - Product catalog
+    - `bronze.crm_sales_details` - Sales transactions
+  </Tab>
+  <Tab title="ERP Tables">
+    - `bronze.erp_cust_az12` - Customer demographics
+    - `bronze.erp_loc_a101` - Customer location data
+    - `bronze.erp_px_cat_g1v2` - Product categories
+  </Tab>
+</Tabs>
+
+---
+
+## CRM Source Tables
+
+### bronze.crm_cust_info
+
+Customer information from the CRM system including demographics and registration details.
+
+<Accordion title="Table Definition">
+```sql
+CREATE TABLE bronze.crm_cust_info (
+    cst_id INT,
+    cst_key VARCHAR(50),
+    cst_firstname VARCHAR(100),
+    cst_lastname VARCHAR(100),
+    cst_marital_status VARCHAR(100),
+    cst_gndr VARCHAR(10),
+    cst_create_date DATE
+);
+```
+</Accordion>
+
+#### Schema
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `cst_id` | INT | Customer numeric identifier |
+| `cst_key` | VARCHAR(50) | Customer business key (alphanumeric) |
+| `cst_firstname` | VARCHAR(100) | Customer first name |
+| `cst_lastname` | VARCHAR(100) | Customer last name |
+| `cst_marital_status` | VARCHAR(100) | Marital status (raw value) |
+| `cst_gndr` | VARCHAR(10) | Gender code from CRM |
+| `cst_create_date` | DATE | Customer registration date |
+
+<Note>
+  Gender values may be incomplete or contain 'n/a'. The Silver layer enriches this with ERP data.
+</Note>
+
+### bronze.crm_prd_info
+
+Product catalog data including pricing, product lines, and validity dates.
+
+<Accordion title="Table Definition">
+```sql
+CREATE TABLE bronze.crm_prd_info (
+    prd_id INT,
+    prd_key VARCHAR(50),
+    prd_name VARCHAR(100),
+    prd_cost DECIMAL(10, 2),
+    prd_line CHAR(10),
+    prd_start_dt DATE,
+    prd_end_dt DATE
+);
+```
+</Accordion>
+
+#### Schema
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `prd_id` | INT | Product numeric identifier |
+| `prd_key` | VARCHAR(50) | Product business key |
+| `prd_name` | VARCHAR(100) | Product name/description |
+| `prd_cost` | DECIMAL(10, 2) | Product cost |
+| `prd_line` | CHAR(10) | Product line code |
+| `prd_start_dt` | DATE | Product availability start date |
+| `prd_end_dt` | DATE | Product discontinuation date (NULL if active) |
+
+<Warning>
+  `prd_line` is stored as CHAR(10) which may include trailing spaces. The Silver layer converts this to VARCHAR for consistency.
+</Warning>
+
+### bronze.crm_sales_details
+
+Transactional sales data including order details, quantities, and pricing.
+
+<Accordion title="Table Definition">
+```sql
+CREATE TABLE bronze.crm_sales_details (
+    sls_ord_num VARCHAR(50),
+    sls_prd_key VARCHAR(50),
+    sls_cust_id INT,
+    sls_ord_dt INT,
+    sls_ship_dt INT,
+    sls_due_dt INT,
+    sls_sales INT,
+    sls_quantity INT,
+    sls_price DECIMAL(10, 2)
+);
+```
+</Accordion>
+
+#### Schema
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `sls_ord_num` | VARCHAR(50) | Sales order number |
+| `sls_prd_key` | VARCHAR(50) | Product key (FK to crm_prd_info) |
+| `sls_cust_id` | INT | Customer ID (FK to crm_cust_info) |
+| `sls_ord_dt` | INT | Order date as integer (YYYYMMDD) |
+| `sls_ship_dt` | INT | Ship date as integer (YYYYMMDD) |
+| `sls_due_dt` | INT | Due date as integer (YYYYMMDD) |
+| `sls_sales` | INT | Sales amount (stored as integer) |
+| `sls_quantity` | INT | Quantity ordered |
+| `sls_price` | DECIMAL(10, 2) | Unit price |
+
+<Warning>
+  **Data Quality Issues**:
+  - Date columns are stored as INT in YYYYMMDD format (not proper DATE types)
+  - Sales amount is stored as INT (not DECIMAL)
+  
+  These issues are corrected in the Silver layer.
+</Warning>
+
+---
+
+## ERP Source Tables
+
+### bronze.erp_cust_az12
+
+Customer demographic data from the ERP system.
+
+<Accordion title="Table Definition">
+```sql
+CREATE TABLE bronze.erp_cust_az12 (
+    cid VARCHAR(50),
+    bdate DATE,
+    gen VARCHAR(10)
+);
+```
+</Accordion>
+
+#### Schema
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `cid` | VARCHAR(50) | Customer identifier (matches crm_cust_info.cst_key) |
+| `bdate` | DATE | Customer birth date |
+| `gen` | VARCHAR(10) | Gender code |
+
+<Info>
+  This table provides birth date and gender information that may be missing from CRM data. Joined in Gold layer's `dim_customer` view.
+</Info>
+
+### bronze.erp_loc_a101
+
+Customer location and country information.
+
+<Accordion title="Table Definition">
+```sql
+CREATE TABLE bronze.erp_loc_a101 (
+    cid VARCHAR(50),
+    cntry VARCHAR(100)
+);
+```
+</Accordion>
+
+#### Schema
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `cid` | VARCHAR(50) | Customer identifier (matches crm_cust_info.cst_key) |
+| `cntry` | VARCHAR(100) | Country name |
+
+### bronze.erp_px_cat_g1v2
+
+Product category and classification hierarchy from ERP.
+
+<Accordion title="Table Definition">
+```sql
+CREATE TABLE bronze.erp_px_cat_g1v2 (
+    id VARCHAR(50),
+    cat VARCHAR(50),
+    subcat VARCHAR(50),
+    manteinance VARCHAR(50)
+);
+```
+</Accordion>
+
+#### Schema
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | VARCHAR(50) | Category identifier (matches crm_prd_info.cat_id in Silver) |
+| `cat` | VARCHAR(50) | Primary category |
+| `subcat` | VARCHAR(50) | Subcategory |
+| `manteinance` | VARCHAR(50) | Maintenance classification |
+
+<Note>
+  The column name `manteinance` appears to be a misspelling of "maintenance" preserved from the source system.
+</Note>
+
+---
+
+## Data Loading Strategy
+
+<Steps>
+  <Step title="Extract">
+    Data is extracted from source systems (CRM and ERP) using scheduled jobs
+  </Step>
+  <Step title="Load">
+    Raw data is loaded into Bronze tables via `INSERT` or `COPY` operations
+  </Step>
+  <Step title="Preserve">
+    No transformations applied - data types and values match source exactly
+  </Step>
+  <Step title="Version">
+    Full history maintained for audit and reprocessing purposes
+  </Step>
+</Steps>
+
+## Common Issues
+
+The Bronze layer intentionally preserves data quality issues that are resolved downstream:
+
+<AccordionGroup>
+  <Accordion title="Date Format Issues" icon="calendar">
+    **Problem**: `crm_sales_details` stores dates as INT (YYYYMMDD format)
+    
+    **Resolution**: Silver layer converts to proper DATE types
+  </Accordion>
+  
+  <Accordion title="Type Mismatches" icon="code">
+    **Problem**: Sales amounts stored as INT instead of DECIMAL
+    
+    **Resolution**: Silver layer casts to appropriate numeric types
+  </Accordion>
+  
+  <Accordion title="Character Fields" icon="text">
+    **Problem**: CHAR fields may have trailing spaces
+    
+    **Resolution**: Silver layer uses VARCHAR and applies TRIM
+  </Accordion>
+  
+  <Accordion title="Incomplete Data" icon="triangle-exclamation">
+    **Problem**: Gender values may be 'n/a' or missing
+    
+    **Resolution**: Gold layer enriches with ERP data via joins
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Usage Guidelines
+
+<Warning>
+  **Not for Direct Analytics**
+  
+  Bronze tables should not be used directly for reporting or analytics. Always query Silver or Gold layers for business consumption.
+</Warning>
+
+### When to Use Bronze
+
+- Data lineage and audit investigations
+- Reprocessing data after logic changes
+- Validating source system data quality
+- Troubleshooting transformation issues
+
+### When to Use Silver/Gold
+
+- Business reporting and analytics
+- Dashboard visualizations
+- Machine learning features
+- Standard operational queries
+
+---
+
+## Next Steps
+
+<Card title="Silver Layer" icon="arrow-right" href="/data-model/silver-layer">
+  Learn how Bronze data is cleansed and standardized in the Silver layer
+</Card>

@@ -1,80 +1,317 @@
 ---
-title: "Quickstart"
-description: "Start building awesome documentation in minutes"
+title: Quickstart
+description: Get your SQL Data Warehouse up and running in minutes with Docker and PostgreSQL
 ---
 
-## Get started in three steps
+This quickstart guide will help you set up a fully functional data warehouse using the Medallion Architecture (Bronze, Silver, Gold layers) in under 10 minutes.
 
-Get your documentation site running locally and make your first customization.
+## Prerequisites
 
-### Step 1: Set up your local environment
+Before you begin, ensure you have the following installed:
 
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
+- Docker and Docker Compose
+- Git
+- A PostgreSQL client (psql, DBeaver, or pgAdmin)
+
+## Quick Setup
+
+<Steps>
+  <Step title="Clone the repository">
+    Clone the SQL Data Warehouse project to your local machine:
     
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
+    ```bash
+    git clone <repository-url>
+    cd sql-data-warehouse
+    ```
+  </Step>
+
+  <Step title="Configure environment variables">
+    Create a `.env` file in the project root with your PostgreSQL credentials:
     
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
-
-### Step 2: Deploy your changes
-
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
+    ```bash .env
+    POSTGRES_USER=datawarehouse
+    POSTGRES_PASSWORD=your_secure_password
+    POSTGRES_DB=dwh
+    ```
     
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
+    <Note>
+      Choose a strong password for production environments. These credentials will be used to connect to your PostgreSQL database.
+    </Note>
+  </Step>
 
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
+  <Step title="Start the database with Docker">
+    Launch the PostgreSQL container using Docker Compose:
+    
+    ```bash
+    docker-compose up -d
+    ```
+    
+    This command starts a PostgreSQL 16 Alpine container with:
+    - Port mapping: `5432:5432`
+    - Volume mount for datasets at `/datasets`
+    - Persistent storage for database data
+    
+    Verify the container is running:
+    
+    ```bash
+    docker ps | grep datawarehouse
+    ```
+  </Step>
 
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
+  <Step title="Connect to the database">
+    Connect to your PostgreSQL instance using psql:
+    
+    ```bash
+    docker exec -it datawarehouse psql -U datawarehouse -d dwh
+    ```
+    
+    Or use your preferred PostgreSQL client with these connection details:
+    - **Host**: localhost
+    - **Port**: 5432
+    - **Database**: dwh
+    - **Username**: datawarehouse
+    - **Password**: (from your .env file)
+  </Step>
 
-### Step 3: Go live
+  <Step title="Create the schema structure">
+    Initialize the three-layer architecture by creating the Bronze, Silver, and Gold schemas:
+    
+    ```sql
+    -- Create the Medallion Architecture schemas
+    DROP SCHEMA IF EXISTS bronze CASCADE;
+    CREATE SCHEMA bronze;
+    
+    DROP SCHEMA IF EXISTS silver CASCADE;
+    CREATE SCHEMA silver;
+    
+    DROP SCHEMA IF EXISTS gold CASCADE;
+    CREATE SCHEMA gold;
+    ```
+    
+    <Note>
+      The `CASCADE` option will drop all objects within the schema if it already exists. Use with caution in production.
+    </Note>
+  </Step>
 
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
+  <Step title="Create Bronze layer tables">
+    Set up raw data tables for CRM and ERP sources:
+    
+    ```sql
+    -- CRM customer information
+    CREATE TABLE bronze.crm_cust_info (
+        cst_id INT,
+        cst_key VARCHAR(50),
+        cst_firstname VARCHAR(100),
+        cst_lastname VARCHAR(100),
+        cst_marital_status VARCHAR(100),
+        cst_gndr VARCHAR(10),
+        cst_create_date DATE
+    );
+    
+    -- CRM sales details
+    CREATE TABLE bronze.crm_sales_details (
+        sls_ord_num VARCHAR(50),
+        sls_prd_key VARCHAR(50),
+        sls_cust_id INT,
+        sls_ord_dt INT,
+        sls_ship_dt INT,
+        sls_due_dt INT,
+        sls_sales INT,
+        sls_quantity INT,
+        sls_price DECIMAL(10, 2)
+    );
+    
+    -- ERP customer data
+    CREATE TABLE bronze.erp_cust_az12 (
+        cid VARCHAR(50),
+        bdate DATE,
+        gen VARCHAR(10)
+    );
+    ```
+    
+    Run the complete DDL script:
+    
+    ```bash
+    docker exec -i datawarehouse psql -U datawarehouse -d dwh < scripts/bronze/ddl_bronze.sql
+    ```
+  </Step>
 
-## Next steps
+  <Step title="Load data into Bronze layer">
+    Execute the Bronze layer ETL procedure to load raw data from CSV files:
+    
+    ```bash
+    docker exec -i datawarehouse psql -U datawarehouse -d dwh < scripts/bronze/proc_load_bronze.sql
+    ```
+    
+    This procedure will:
+    - Load CRM customer, product, and sales data
+    - Load ERP customer demographics and location data
+    - Load product category mappings
+    - Display timing and status for each step
+    
+    <Note>
+      The datasets are automatically mounted to `/datasets` inside the container via Docker Compose volume mapping.
+    </Note>
+  </Step>
 
-Now that you have your docs running, explore these key features:
+  <Step title="Create and load Silver layer">
+    Set up the Silver layer for cleaned and standardized data:
+    
+    ```bash
+    docker exec -i datawarehouse psql -U datawarehouse -d dwh < scripts/silver/ddl_silver.sql
+    docker exec -i datawarehouse psql -U datawarehouse -d dwh < scripts/silver/proc_load_silver.sql
+    ```
+    
+    The Silver layer transformation includes:
+    - Data type standardization (date conversion from YYYYMMDD format)
+    - Null handling and default values
+    - Gender and status code normalization
+    - Duplicate removal using window functions
+    - Data quality fixes (negative prices, invalid dates)
+  </Step>
+
+  <Step title="Create Gold layer views">
+    Build the analytical star schema in the Gold layer:
+    
+    ```bash
+    docker exec -i datawarehouse psql -U datawarehouse -d dwh < scripts/gold/ddl_gold.sql
+    ```
+    
+    This creates:
+    - `gold.dim_customer` - Customer dimension with demographics
+    - `gold.dim_product` - Product dimension with categories
+    - `gold.fact_sales` - Sales fact table with measures
+  </Step>
+
+  <Step title="Query your data warehouse">
+    Now you can run analytical queries against your Gold layer:
+    
+    ```sql
+    -- Get total sales by product category
+    SELECT 
+        p.category,
+        p.subcategory,
+        COUNT(DISTINCT f.order_number) as order_count,
+        SUM(f.quantity) as total_quantity,
+        SUM(f.sales_amount) as total_sales
+    FROM gold.fact_sales f
+    JOIN gold.dim_product p ON f.product_key = p.product_key
+    GROUP BY p.category, p.subcategory
+    ORDER BY total_sales DESC;
+    ```
+    
+    ```sql
+    -- Customer analysis by gender
+    SELECT 
+        c.gender,
+        COUNT(DISTINCT c.customer_key) as customer_count,
+        SUM(f.sales_amount) as total_revenue,
+        AVG(f.sales_amount) as avg_order_value
+    FROM gold.fact_sales f
+    JOIN gold.dim_customer c ON f.customer_key = c.customer_key
+    WHERE c.gender != 'n/a'
+    GROUP BY c.gender;
+    ```
+  </Step>
+</Steps>
+
+## What You've Built
+
+Congratulations! You now have a fully functional data warehouse with:
+
+- **Bronze Layer**: Raw data from CRM and ERP systems (6 tables)
+- **Silver Layer**: Cleaned and standardized data with audit columns
+- **Gold Layer**: Analytics-ready star schema with dimensions and facts
+- **ETL Procedures**: Automated data loading with error handling and logging
+
+## Architecture Overview
+
+The warehouse follows the Medallion Architecture pattern:
+
+<CodeGroup>
+```sql Bronze Layer
+-- Raw data ingestion from CSV files
+-- No transformations, exact copy of source
+-- Tables: crm_cust_info, crm_prd_info, crm_sales_details
+--         erp_cust_az12, erp_loc_a101, erp_px_cat_g1v2
+
+CALL bronze.load_bronze();
+```
+
+```sql Silver Layer
+-- Data cleansing and standardization
+-- Type conversions, null handling
+-- Deduplication and validation
+
+CALL silver.load_silver();
+```
+
+```sql Gold Layer
+-- Business-ready star schema
+-- Dimension tables: dim_customer, dim_product
+-- Fact tables: fact_sales
+
+SELECT * FROM gold.fact_sales LIMIT 10;
+```
+</CodeGroup>
+
+## Next Steps
 
 <CardGroup cols={2}>
-
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
-
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
-
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
-
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
-
+  <Card title="Detailed Setup" icon="gear" href="/setup">
+    Learn about advanced configuration options and troubleshooting
+  </Card>
+  <Card title="Data Model" icon="diagram-project" href="/data-model/overview">
+    Understand the star schema and table relationships
+  </Card>
+  <Card title="ETL Procedures" icon="arrows-rotate" href="/etl/overview">
+    Deep dive into the transformation logic
+  </Card>
+  <Card title="Analytics" icon="chart-line" href="/queries/analytics">
+    Explore sample queries and reporting patterns
+  </Card>
 </CardGroup>
 
-<Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
-</Note>
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="Container won't start">
+    Check if port 5432 is already in use:
+    
+    ```bash
+    lsof -i :5432
+    ```
+    
+    If another PostgreSQL instance is running, either stop it or change the port mapping in `docker-compose.yml`:
+    
+    ```yaml
+    ports:
+      - "5433:5432"  # Map to different host port
+    ```
+  </Accordion>
+
+  <Accordion title="Data loading fails">
+    Ensure the datasets directory is properly mounted:
+    
+    ```bash
+    docker exec datawarehouse ls /datasets/source_crm
+    docker exec datawarehouse ls /datasets/source_erp
+    ```
+    
+    Verify file permissions allow the postgres user to read the CSV files.
+  </Accordion>
+
+  <Accordion title="Connection refused errors">
+    Wait a few seconds for PostgreSQL to fully initialize:
+    
+    ```bash
+    docker logs datawarehouse
+    ```
+    
+    Look for the message: `database system is ready to accept connections`
+  </Accordion>
+</AccordionGroup>
+
+<Warning>
+  This quickstart uses simplified security settings suitable for development. For production deployments, implement proper authentication, encrypted connections, and regular backups.
+</Warning>

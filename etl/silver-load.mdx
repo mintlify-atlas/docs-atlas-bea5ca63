@@ -1,0 +1,631 @@
+---
+title: 'Silver Layer - Data Transformation'
+description: 'Documentation for the silver.load_silver() procedure that cleanses and transforms bronze data'
+---
+
+## Overview
+
+The `silver.load_silver()` procedure transforms raw data from the Bronze layer into cleansed, validated, and business-ready data in the Silver layer. This layer applies data quality rules, standardizes formats, handles null values, and removes duplicates.
+
+<Note>
+  The Silver layer is where "bad" data becomes "good" data. All transformations are documented and repeatable, ensuring data quality and consistency.
+</Note>
+
+## Transformation Categories
+
+The Silver layer applies several types of transformations:
+
+<CardGroup cols={2}>
+  <Card title="Data Cleansing" icon="broom">
+    - String trimming
+    - Null value handling
+    - Deduplication
+    - Invalid data removal
+  </Card>
+  <Card title="Standardization" icon="code">
+    - Code expansion (M → Male)
+    - Date format conversion
+    - Case normalization
+    - Default values
+  </Card>
+  <Card title="Validation" icon="shield-check">
+    - Business rule enforcement
+    - Data type validation
+    - Referential integrity
+    - Range checking
+  </Card>
+  <Card title="Enrichment" icon="plus">
+    - Calculated fields
+    - Window functions
+    - Surrogate keys
+    - SCD Type 2 logic
+  </Card>
+</CardGroup>
+
+## Procedure Code
+
+Here's the complete `silver.load_silver()` procedure from `/home/daytona/workspace/source/scripts/silver/proc_load_silver.sql`:
+
+```sql
+create or replace procedure silver.load_silver()
+language plpgsql
+security definer
+as $$
+declare
+  v_step text;
+  v_start_batch timestamp := clock_timestamp();
+  v_end_batch timestamp;
+  v_ok int := 0;
+  v_err int := 0;
+  v_msg text;
+begin
+  raise notice '[%] load silver started', to_char(clock_timestamp(), 'HH24:MI:SS');
+  
+  -- Transform CRM customer information
+  begin
+    declare
+      v_start_date timestamp := clock_timestamp();
+    begin
+      v_step := 'load silver.crm_cust_info';
+      
+      truncate TABLE silver.crm_cust_info;
+      insert into silver.crm_cust_info (
+        cst_id,
+        cst_key,
+        cst_firstname,
+        cst_lastname,
+        cst_marital_status,
+        cst_gndr,
+        cst_create_date
+        ) 
+        select
+          cst_id, 
+          trim(cst_key), 
+          trim(cst_firstname) as cst_firstname, 
+          trim(cst_lastname) as cst_lastname, 
+          case upper(trim(cst_marital_status)) 
+            WHEN 'S' THEN 'Single' 
+            WHEN 'M' THEN 'Married' 
+            else 'n/a'
+          END as cst_marital_status, 
+          case upper(trim(cst_gndr)) 
+            WHEN 'M' THEN 'Male' 
+            WHEN 'F' THEN 'Female' 
+            else 'n/a'
+          END as cst_gndr,
+          cst_create_date 
+        from (
+          select *, 
+            ROW_NUMBER() OVER (PARTITION BY cst_id ORDER BY cst_create_date DESC) AS flag_last
+          FROM bronze.crm_cust_info)
+        WHERE flag_last = 1;
+      v_ok := v_ok + 1;
+      raise notice 'Step [%] completed successfully (%.0f s)',
+        v_step,
+        extract(epoch FROM (clock_timestamp() - v_start_date));
+    exception when others then
+      v_err := v_err + 1;
+      v_msg := 'Error in step: ' || v_step || ' - ' || sqlerrm;
+      raise exception '%', v_msg;
+    end;
+  end;
+
+  -- Transform CRM product information
+  begin
+    declare
+      v_start_date timestamp := clock_timestamp();
+    begin
+      v_step := 'load silver.crm_prd_info';
+      
+      truncate table silver.crm_prd_info;
+      insert into silver.crm_prd_info(
+        prd_id,
+        cat_id,
+        prd_key,
+        prd_name,
+        prd_cost,
+        prd_line,
+        prd_start_dt,
+        prd_end_dt
+        ) 
+        SELECT prd_id,
+          replace(substring(trim(prd_key), 1, 5), '-','_') as cat_id,
+          substring(prd_key,7, length(prd_key)) as prd_key,
+          prd_name,
+          coalesce(prd_cost, 0) as prd_cost,
+          case upper(trim(prd_line))
+            when 'M' then 'Mountain'
+            when 'R' then 'Road'
+            when 'S' then 'Other sales'
+            when 'T' then 'Touring'
+            else 'n/a'
+            end as prd_line,
+          prd_start_dt,
+          lead(prd_start_dt) over (partition by prd_key order by prd_start_dt)-1 as prd_end_dt
+        FROM bronze.crm_prd_info;
+    
+      v_ok := v_ok + 1;
+      raise notice 'Step [%] completed successfully (%.0f s)',
+        v_step,
+        extract(epoch FROM (clock_timestamp() - v_start_date));
+    exception when others then
+      v_err := v_err + 1;
+      v_msg := 'Error in step: ' || v_step || ' - ' || sqlerrm;
+      raise exception '%', v_msg;
+    end;
+  end;
+  
+  -- Transform CRM sales details
+  begin
+    declare
+      v_start_date timestamp := clock_timestamp();
+    begin
+      v_step := 'load silver.crm_sales_details';
+      
+      truncate table silver.crm_sales_details;
+      insert into silver.crm_sales_details (
+        sls_ord_num,
+        sls_prd_key,
+        sls_cust_id,
+        sls_ord_dt,
+        sls_ship_dt,
+        sls_due_dt,
+        sls_sales,
+        sls_quantity,
+        sls_price
+      ) 
+      select sls_ord_num,
+        sls_prd_key,
+        sls_cust_id,
+        CASE
+        WHEN sls_ord_dt IS NULL
+          OR sls_ord_dt = 0
+          OR length(sls_ord_dt::text)!= 8
+        THEN NULL
+        ELSE to_date(TRIM(sls_ord_dt::text), 'YYYYMMDD')
+      END AS sls_ord_dt,
+        case 
+          when sls_ship_dt is null
+          or sls_ship_dt = 0
+          or length(sls_ship_dt::text) != 8        
+            then null
+          else to_date(TRIM(sls_ship_dt::text), 'YYYYMMDD')
+        end as sls_ship_dt,
+        case
+          when sls_due_dt is null 
+          or sls_due_dt = 0
+          or length(sls_due_dt::text) != 8 
+          then null
+          else to_date(sls_due_dt::text, 'YYYYMMDD')
+        end as sls_due_dt,
+        case 
+          when sls_sales is null or sls_sales <= 0 or sls_sales != sls_quantity * abs(sls_price) 
+          then sls_quantity * abs(sls_price)
+          else sls_sales
+        end as sls_sales,
+        sls_quantity,
+      case 
+        when sls_price is null 
+          or sls_price < 0 
+          or sls_price = 0 
+        then sls_sales / abs(sls_quantity)
+        when sls_price < 0 
+          then abs(sls_price)
+        else sls_price
+      end as sls_price
+      from bronze.crm_sales_details; 
+    
+      v_ok := v_ok + 1;
+      raise notice 'Step [%] completed successfully (%.0f s)',
+        v_step,
+        extract(epoch FROM (clock_timestamp() - v_start_date));
+    exception when others then
+      v_err := v_err + 1;
+      v_msg := 'Error in step: ' || v_step || ' - ' || sqlerrm;
+      raise exception '%', v_msg;
+    end;
+  end;
+
+  -- Transform ERP customer data
+  begin
+    declare
+      v_start_date timestamp := clock_timestamp();
+    begin
+      v_step := 'load silver.erp_cust_az12';
+      
+      truncate table silver.erp_cust_az12;
+      insert into silver.erp_cust_az12 (cid, bdate, gen) 
+      select 
+        case 
+          when cid like 'NAS%' then substring(cid, 4, length(cid))
+          else cid
+        end as cid,
+        case 
+          when bdate > current_date then null
+          else bdate
+        end as bdate,
+        case 
+          when upper(trim(gen)) in ('F', 'FEMALE') then 'Female'
+          when upper(trim(gen)) in ('M', 'MALE') then 'Male'
+          else 'n/a'
+        end as gen
+      from bronze.erp_cust_az12;
+      v_ok := v_ok + 1;
+      raise notice 'Step [%] completed successfully (%.0f s)',
+        v_step,
+        extract(epoch FROM (clock_timestamp() - v_start_date));
+    exception when others then
+      v_err := v_err + 1;
+      v_msg := 'Error in step: ' || v_step || ' - ' || sqlerrm;
+      raise exception '%', v_msg;
+    end;
+  end;
+
+  -- Transform ERP location data
+  begin
+    declare
+      v_start_date timestamp := clock_timestamp();
+    begin
+      v_step := 'load silver.erp_loc_a101';
+      
+      truncate table silver.erp_loc_a101;
+      insert into silver.erp_loc_a101 select 
+        replace (cid, '-', '') as cid,
+        case 
+          when trim(cntry) in ('USA','US') then 'United States'
+          when trim(cntry) = 'CAN' then 'Canada'
+          when trim(cntry) = 'DE' then 'Germany'
+          when trim(cntry) = '' or trim(cntry) is null then 'n/a'
+          else trim(cntry)
+        end as cntry
+      from bronze.erp_loc_a101;
+      v_ok := v_ok + 1;
+      raise notice 'Step [%] completed successfully (%.0f s)',
+        v_step,
+        extract(epoch FROM (clock_timestamp() - v_start_date));
+    exception when others then
+      v_err := v_err + 1;
+      v_msg := 'Error in step: ' || v_step || ' - ' || sqlerrm;
+      raise exception '%', v_msg;
+    end;
+  end;
+
+  -- Transform ERP product category data
+  begin
+    declare
+      v_start_date timestamp := clock_timestamp();
+    begin
+      v_step := 'load silver.erp_px_cat_g1v2';
+      
+      truncate table silver.erp_px_cat_g1v2;
+      insert into silver.erp_px_cat_g1v2 (
+        id,
+        cat,
+        subcat,
+        manteinance
+      )
+      select 
+        id,
+        cat,
+        subcat,
+        manteinance
+      from bronze.erp_px_cat_g1v2;
+      v_ok := v_ok + 1;
+      raise notice 'Step [%] completed successfully (%.0f s)',
+        v_step,
+        extract(epoch FROM (clock_timestamp() - v_start_date));
+    exception when others then
+      v_err := v_err + 1;
+      v_msg := 'Error in step: ' || v_step || ' - ' || sqlerrm;
+      raise exception '%', v_msg;
+    end;
+  end;
+  
+  v_end_batch := clock_timestamp();
+  raise notice 'load silver finished in [%] seconds', 
+    extract(epoch from (v_end_batch - v_start_batch));
+  raise notice '[%] load silver started', to_char(clock_timestamp(), 'HH24:MI:SS');
+end;
+$$
+```
+
+## Key Transformations
+
+### Customer Information Deduplication
+
+The customer data includes deduplication logic using window functions:
+
+```sql
+select *, 
+  ROW_NUMBER() OVER (PARTITION BY cst_id ORDER BY cst_create_date DESC) AS flag_last
+FROM bronze.crm_cust_info
+WHERE flag_last = 1;
+```
+
+<Accordion title="How Deduplication Works">
+  1. **Partition by customer ID**: Groups all records for the same customer
+  2. **Order by create date**: Sorts records within each customer group
+  3. **ROW_NUMBER()**: Assigns rank 1 to the most recent record
+  4. **Filter flag_last = 1**: Keeps only the latest record per customer
+</Accordion>
+
+### Code Expansion and Standardization
+
+#### Marital Status
+
+```sql
+case upper(trim(cst_marital_status)) 
+  WHEN 'S' THEN 'Single' 
+  WHEN 'M' THEN 'Married' 
+  else 'n/a'
+END
+```
+
+#### Gender
+
+```sql
+case upper(trim(cst_gndr)) 
+  WHEN 'M' THEN 'Male' 
+  WHEN 'F' THEN 'Female' 
+  else 'n/a'
+END
+```
+
+#### Product Line
+
+```sql
+case upper(trim(prd_line))
+  when 'M' then 'Mountain'
+  when 'R' then 'Road'
+  when 'S' then 'Other sales'
+  when 'T' then 'Touring'
+  else 'n/a'
+end
+```
+
+### Product Key Parsing
+
+Product keys are split into category and product components:
+
+```sql
+-- Extract category ID from first 5 characters
+replace(substring(trim(prd_key), 1, 5), '-','_') as cat_id,
+
+-- Extract product key from position 7 onwards
+substring(prd_key, 7, length(prd_key)) as prd_key
+```
+
+**Example**: `BK-M18S-42` becomes:
+- `cat_id`: `BK_M1`
+- `prd_key`: `8S-42`
+
+### SCD Type 2 for Products
+
+The procedure implements Slowly Changing Dimension Type 2 logic for product history:
+
+```sql
+prd_start_dt,
+lead(prd_start_dt) over (partition by prd_key order by prd_start_dt)-1 as prd_end_dt
+```
+
+<Accordion title="Understanding SCD Type 2">
+  - **prd_start_dt**: When this product version became active
+  - **prd_end_dt**: One day before the next version started
+  - **LEAD() function**: Gets the start date of the next record
+  - **NULL end_dt**: Indicates the current active version
+  
+  This allows tracking historical product information and price changes over time.
+</Accordion>
+
+## Data Quality Rules
+
+### Date Validation
+
+The sales details transformation includes comprehensive date validation:
+
+```sql
+CASE
+  WHEN sls_ord_dt IS NULL
+    OR sls_ord_dt = 0
+    OR length(sls_ord_dt::text) != 8
+  THEN NULL
+  ELSE to_date(TRIM(sls_ord_dt::text), 'YYYYMMDD')
+END AS sls_ord_dt
+```
+
+**Validation checks**:
+- Null values → NULL
+- Zero values → NULL
+- Invalid length (not 8 digits) → NULL
+- Valid format (YYYYMMDD) → Converted to DATE type
+
+### Price and Sales Validation
+
+#### Sales Amount Calculation
+
+```sql
+case 
+  when sls_sales is null 
+    or sls_sales <= 0 
+    or sls_sales != sls_quantity * abs(sls_price) 
+  then sls_quantity * abs(sls_price)
+  else sls_sales
+end as sls_sales
+```
+
+**Logic**: If sales amount is missing, invalid, or doesn't match qty × price, recalculate it.
+
+#### Price Validation
+
+```sql
+case 
+  when sls_price is null 
+    or sls_price < 0 
+    or sls_price = 0 
+  then sls_sales / abs(sls_quantity)
+  when sls_price < 0 
+    then abs(sls_price)
+  else sls_price
+end as sls_price
+```
+
+**Logic**: Derive price from sales and quantity if missing or invalid, ensure positive values.
+
+### Future Date Handling
+
+Birth dates in the future are rejected:
+
+```sql
+case 
+  when bdate > current_date then null
+  else bdate
+end as bdate
+```
+
+### Prefix Removal
+
+Customer IDs with "NAS" prefix are cleaned:
+
+```sql
+case 
+  when cid like 'NAS%' then substring(cid, 4, length(cid))
+  else cid
+end as cid
+```
+
+### Country Code Standardization
+
+```sql
+case 
+  when trim(cntry) in ('USA','US') then 'United States'
+  when trim(cntry) = 'CAN' then 'Canada'
+  when trim(cntry) = 'DE' then 'Germany'
+  when trim(cntry) = '' or trim(cntry) is null then 'n/a'
+  else trim(cntry)
+end as cntry
+```
+
+## Execution
+
+### Basic Execution
+
+```sql
+CALL silver.load_silver();
+```
+
+### Expected Output
+
+```
+NOTICE:  [14:25:30] load silver started
+NOTICE:  Step [load silver.crm_cust_info] completed successfully (3 s)
+NOTICE:  Step [load silver.crm_prd_info] completed successfully (2 s)
+NOTICE:  Step [load silver.crm_sales_details] completed successfully (5 s)
+NOTICE:  Step [load silver.erp_cust_az12] completed successfully (1 s)
+NOTICE:  Step [load silver.erp_loc_a101] completed successfully (1 s)
+NOTICE:  Step [load silver.erp_px_cat_g1v2] completed successfully (1 s)
+NOTICE:  load silver finished in [13] seconds
+```
+
+## Data Validation Queries
+
+### Check for Deduplication
+
+```sql
+-- Verify no duplicate customers
+SELECT cst_id, COUNT(*)
+FROM silver.crm_cust_info
+GROUP BY cst_id
+HAVING COUNT(*) > 1;
+-- Should return 0 rows
+```
+
+### Verify Code Expansion
+
+```sql
+-- Check gender values are expanded
+SELECT DISTINCT cst_gndr 
+FROM silver.crm_cust_info;
+-- Should return: Male, Female, n/a
+```
+
+### Validate Date Conversions
+
+```sql
+-- Check sales date types
+SELECT sls_ord_dt, sls_ship_dt, sls_due_dt
+FROM silver.crm_sales_details
+WHERE sls_ord_dt IS NOT NULL
+LIMIT 10;
+```
+
+### Price Validation
+
+```sql
+-- Verify price calculations
+SELECT 
+  sls_quantity,
+  sls_price,
+  sls_sales,
+  sls_quantity * sls_price as calculated_sales,
+  abs(sls_sales - (sls_quantity * sls_price)) as difference
+FROM silver.crm_sales_details
+WHERE abs(sls_sales - (sls_quantity * sls_price)) > 0.01
+LIMIT 10;
+```
+
+## Permissions
+
+```sql
+grant execute on procedure silver.load_silver() to public;
+grant usage on schema silver to public;
+grant select on all tables in schema silver to public;
+```
+
+## Performance Considerations
+
+<Accordion title="Window Functions vs Subqueries">
+  Window functions (ROW_NUMBER, LEAD) are more efficient than equivalent subquery or self-join approaches:
+  - Single table scan instead of multiple
+  - Better query optimization
+  - More readable code
+</Accordion>
+
+<Accordion title="TRUNCATE Performance">
+  Using TRUNCATE instead of DELETE:
+  - Faster execution (no row-by-row processing)
+  - Immediate space reclamation
+  - Resets table statistics
+</Accordion>
+
+<Accordion title="CASE Statement Optimization">
+  The order of CASE conditions matters:
+  - Place most common conditions first
+  - Use ELSE for default values
+  - Avoid redundant evaluations with UPPER and TRIM
+</Accordion>
+
+## Next Steps
+
+After loading the Silver layer, the Gold layer views can be queried:
+
+<Card title="Gold Views" icon="star" href="/etl/gold-views">
+  Explore dimensional models built from Silver data
+</Card>
+
+### Verify Silver Data Quality
+
+```sql
+-- Row counts
+SELECT 'crm_cust_info' as table_name, COUNT(*) FROM silver.crm_cust_info
+UNION ALL
+SELECT 'crm_prd_info', COUNT(*) FROM silver.crm_prd_info
+UNION ALL
+SELECT 'crm_sales_details', COUNT(*) FROM silver.crm_sales_details;
+
+-- Data quality metrics
+SELECT 
+  COUNT(*) as total_customers,
+  COUNT(DISTINCT cst_key) as unique_keys,
+  SUM(CASE WHEN cst_gndr = 'n/a' THEN 1 ELSE 0 END) as unknown_gender
+FROM silver.crm_cust_info;
+```

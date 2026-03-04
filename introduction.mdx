@@ -1,0 +1,279 @@
+---
+title: Introduction
+description: A modern data warehouse built with PostgreSQL implementing medallion architecture for ETL processes, data modeling, and analytics
+mode: custom
+---
+
+<div className="relative overflow-hidden bg-gradient-to-br from-[#1A4D6D] via-[#336791] to-[#1A4D6D] dark:from-[#0f1117] dark:via-[#1A4D6D] dark:to-[#0f1117] py-20">
+  <div className="absolute inset-0 bg-[url('/grid.svg')] bg-center opacity-10"></div>
+  <div className="relative max-w-6xl mx-auto px-6 lg:px-8">
+    <div className="lg:grid lg:grid-cols-12 lg:gap-8 items-center">
+      <div className="lg:col-span-7">
+        <h1 className="text-4xl sm:text-5xl lg:text-6xl font-bold text-white mb-6">
+          SQL Data Warehouse
+        </h1>
+        <p className="text-lg sm:text-xl text-gray-100 dark:text-gray-200 max-w-2xl mb-8">
+          Build modern data warehouses with PostgreSQL using medallion architecture. Consolidate ERP and CRM data for analytics-ready insights.
+        </p>
+        <div className="flex flex-wrap gap-4">
+          <a
+            href="/quickstart"
+            className="inline-flex items-center px-6 py-3 rounded-lg bg-white text-[#336791] font-semibold hover:bg-gray-100 transition-colors no-underline"
+          >
+            Get started
+            <svg className="ml-2 w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+            </svg>
+          </a>
+          <a
+            href="/architecture/overview"
+            className="inline-flex items-center px-6 py-3 rounded-lg border border-white/30 bg-white/10 text-white font-semibold hover:bg-white/20 transition-colors no-underline"
+          >
+            View architecture
+          </a>
+        </div>
+      </div>
+      <div className="hidden lg:block lg:col-span-5 mt-12 lg:mt-0">
+        <div className="relative">
+          <div className="absolute inset-0 bg-gradient-to-r from-[#5DA7DB] to-[#336791] rounded-2xl blur-3xl opacity-20"></div>
+          <div className="relative bg-[#1a1d27] dark:bg-[#1a1d27] rounded-2xl p-6 border border-[#27272a] dark:border-[#27272a]">
+            <div className="flex items-center gap-2 mb-4">
+              <div className="w-3 h-3 rounded-full bg-red-500"></div>
+              <div className="w-3 h-3 rounded-full bg-yellow-500"></div>
+              <div className="w-3 h-3 rounded-full bg-green-500"></div>
+            </div>
+            <pre className="text-xs sm:text-sm text-gray-300 overflow-x-auto"><code>{`-- Query the gold layer
+SELECT 
+  c.first_name,
+  c.last_name,
+  p.product_name,
+  f.sales_amount
+FROM gold.fact_sales f
+JOIN gold.dim_customer c
+  ON f.customer_key = c.customer_key
+JOIN gold.dim_product p
+  ON f.product_key = p.product_key
+WHERE f.order_date >= '2024-01-01';`}</code></pre>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div className="mt-16 mb-16 max-w-5xl mx-auto px-6">
+  <h2 className="text-3xl font-semibold text-gray-900 dark:text-white mb-4">
+    Quick start
+  </h2>
+  <p className="text-base text-gray-600 dark:text-gray-400 mb-8">
+    Get your data warehouse running in minutes with Docker
+  </p>
+
+  <Steps>
+    <Step title="Clone the repository">
+      Download the project and navigate to the directory:
+      
+      ```bash
+      git clone https://github.com/LeoBellier/sql-data-warehouse-project.git
+      cd sql-data-warehouse-project
+      ```
+    </Step>
+
+    <Step title="Set up environment variables">
+      Create a `.env` file with your PostgreSQL credentials:
+      
+      ```bash
+      POSTGRES_USER=warehouse_admin
+      POSTGRES_PASSWORD=your_secure_password
+      POSTGRES_DB=datawarehouse
+      ```
+    </Step>
+
+    <Step title="Start the PostgreSQL container">
+      Launch the database with Docker Compose:
+      
+      ```bash
+      docker-compose up -d
+      ```
+      
+      <Note>The container mounts the datasets directory at `/datasets` for CSV imports.</Note>
+    </Step>
+
+    <Step title="Initialize the schemas">
+      Connect to the database and create the Bronze, Silver, and Gold schemas:
+      
+      ```bash
+      psql -h localhost -U warehouse_admin -d datawarehouse -f scripts/SchemaCreator.sql
+      ```
+    </Step>
+
+    <Step title="Load the data">
+      Run the ETL procedures to populate your data warehouse:
+      
+      ```sql
+      CALL bronze.load_bronze();
+      CALL silver.load_silver();
+      ```
+      
+      <Accordion title="Expected output">
+        ```
+        NOTICE: [14:32:15] load bronze started
+        NOTICE: Step [load bronze.crm_cust_info] completed successfully (1 s)
+        NOTICE: Step [load bronze.crm_prd_info] completed successfully (0 s)
+        NOTICE: Step [load bronze.crm_sales_details] completed successfully (2 s)
+        NOTICE: load bronze finished in [3] seconds
+        ```
+      </Accordion>
+    </Step>
+
+    <Step title="Query the gold layer">
+      Run analytics queries on the star schema:
+      
+      ```sql
+      SELECT 
+        p.category,
+        COUNT(DISTINCT f.customer_key) as customer_count,
+        SUM(f.sales_amount) as total_sales
+      FROM gold.fact_sales f
+      JOIN gold.dim_product p ON f.product_key = p.product_key
+      GROUP BY p.category
+      ORDER BY total_sales DESC;
+      ```
+    </Step>
+  </Steps>
+</div>
+
+<div className="mt-16 mb-16 max-w-5xl mx-auto px-6">
+  <h2 className="text-3xl font-semibold text-gray-900 dark:text-white mb-4">
+    Explore by topic
+  </h2>
+  <p className="text-base text-gray-600 dark:text-gray-400 mb-8">
+    Learn about the architecture, data model, and ETL processes
+  </p>
+
+  <CardGroup cols={3}>
+    <Card title="Medallion architecture" icon="layer-group" href="/architecture/medallion-architecture">
+      Understand the Bronze, Silver, and Gold layers and how data flows through the warehouse
+    </Card>
+    <Card title="Data model" icon="database" href="/data-model/overview">
+      Explore the star schema with fact and dimension tables designed for analytics
+    </Card>
+    <Card title="ETL procedures" icon="arrows-rotate" href="/etl/overview">
+      Learn how stored procedures load and transform data across layers
+    </Card>
+    <Card title="Query guide" icon="magnifying-glass-chart" href="/queries/analytics">
+      Write analytics queries to extract insights from your data warehouse
+    </Card>
+    <Card title="Data quality" icon="shield-check" href="/operations/data-quality">
+      Implement quality checks and validation for your data pipelines
+    </Card>
+    <Card title="Deployment" icon="rocket" href="/operations/deployment">
+      Deploy and manage your data warehouse in production environments
+    </Card>
+  </CardGroup>
+</div>
+
+<div className="mt-16 mb-16 max-w-5xl mx-auto px-6">
+  <h2 className="text-3xl font-semibold text-gray-900 dark:text-white mb-4">
+    Key features
+  </h2>
+  <p className="text-base text-gray-600 dark:text-gray-400 mb-8">
+    What makes this data warehouse solution powerful
+  </p>
+
+  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+    <div className="bg-white dark:bg-[#1a1d27] rounded-xl p-6 border border-gray-200 dark:border-[#27272a]">
+      <div className="flex items-start gap-4">
+        <div className="flex-shrink-0 w-10 h-10 rounded-lg bg-[#336791]/10 dark:bg-[#336791]/20 flex items-center justify-center">
+          <svg className="w-5 h-5 text-[#336791]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4" />
+          </svg>
+        </div>
+        <div>
+          <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-2">
+            Multi-source integration
+          </h3>
+          <p className="text-sm text-gray-600 dark:text-gray-400">
+            Combine data from ERP and CRM systems into a unified data model for comprehensive analysis
+          </p>
+        </div>
+      </div>
+    </div>
+
+    <div className="bg-white dark:bg-[#1a1d27] rounded-xl p-6 border border-gray-200 dark:border-[#27272a]">
+      <div className="flex items-start gap-4">
+        <div className="flex-shrink-0 w-10 h-10 rounded-lg bg-[#336791]/10 dark:bg-[#336791]/20 flex items-center justify-center">
+          <svg className="w-5 h-5 text-[#336791]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+          </svg>
+        </div>
+        <div>
+          <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-2">
+            Data quality built-in
+          </h3>
+          <p className="text-sm text-gray-600 dark:text-gray-400">
+            Automated cleansing and validation in the Silver layer ensures high-quality analytics
+          </p>
+        </div>
+      </div>
+    </div>
+
+    <div className="bg-white dark:bg-[#1a1d27] rounded-xl p-6 border border-gray-200 dark:border-[#27272a]">
+      <div className="flex items-start gap-4">
+        <div className="flex-shrink-0 w-10 h-10 rounded-lg bg-[#336791]/10 dark:bg-[#336791]/20 flex items-center justify-center">
+          <svg className="w-5 h-5 text-[#336791]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
+          </svg>
+        </div>
+        <div>
+          <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-2">
+            Star schema design
+          </h3>
+          <p className="text-sm text-gray-600 dark:text-gray-400">
+            Optimized fact and dimension tables in the Gold layer for fast, intuitive analytics queries
+          </p>
+        </div>
+      </div>
+    </div>
+
+    <div className="bg-white dark:bg-[#1a1d27] rounded-xl p-6 border border-gray-200 dark:border-[#27272a]">
+      <div className="flex items-start gap-4">
+        <div className="flex-shrink-0 w-10 h-10 rounded-lg bg-[#336791]/10 dark:bg-[#336791]/20 flex items-center justify-center">
+          <svg className="w-5 h-5 text-[#336791]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 3v4M3 5h4M6 17v4m-2-2h4m5-16l2.286 6.857L21 12l-5.714 2.143L13 21l-2.286-6.857L5 12l5.714-2.143L13 3z" />
+          </svg>
+        </div>
+        <div>
+          <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-2">
+            Docker-ready deployment
+          </h3>
+          <p className="text-sm text-gray-600 dark:text-gray-400">
+            Run the entire warehouse stack with a single docker-compose command for easy setup
+          </p>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div className="mt-20 mb-16 max-w-5xl mx-auto px-6">
+  <div className="bg-gradient-to-br from-[#336791] to-[#1A4D6D] dark:from-[#1A4D6D] dark:to-[#336791] rounded-2xl p-8 lg:p-12 border border-[#5DA7DB]/20">
+    <div className="max-w-3xl">
+      <h2 className="text-3xl font-semibold text-white mb-4">
+        Ready to build your data warehouse?
+      </h2>
+      <p className="text-lg text-gray-100 mb-6">
+        Follow the quickstart guide to set up a production-ready data warehouse with PostgreSQL, ETL procedures, and analytics-ready schemas.
+      </p>
+      <a
+        href="/quickstart"
+        className="inline-flex items-center px-6 py-3 rounded-lg bg-white text-[#336791] font-semibold hover:bg-gray-100 transition-colors no-underline"
+      >
+        Get started
+        <svg className="ml-2 w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+        </svg>
+      </a>
+    </div>
+  </div>
+</div>

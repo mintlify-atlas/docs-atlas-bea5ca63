@@ -1,0 +1,420 @@
+---
+title: 'Silver Layer'
+description: 'Cleansed and standardized data with quality improvements and audit columns'
+---
+
+## Overview
+
+The **Silver layer** contains cleansed, validated, and standardized data transformed from the Bronze layer. This layer applies business rules, corrects data quality issues, and adds audit columns.
+
+<Info>
+  Silver tables serve as the enterprise-grade source of truth, ready for consumption by downstream Gold layer models and advanced analytics.
+</Info>
+
+## Design Principles
+
+<CardGroup cols={2}>
+  <Card title="Data Quality" icon="check-circle">
+    Type conversions, null handling, and validation
+  </Card>
+  <Card title="Standardization" icon="equals">
+    Consistent formats and naming conventions
+  </Card>
+  <Card title="Audit Trail" icon="clock-rotate-left">
+    Timestamps for data lineage tracking
+  </Card>
+  <Card title="Business Rules" icon="gavel">
+    Enterprise logic applied consistently
+  </Card>
+</CardGroup>
+
+## Key Improvements Over Bronze
+
+<Tabs>
+  <Tab title="Type Safety">
+    - Integer dates converted to proper DATE types
+    - CHAR fields converted to VARCHAR (no trailing spaces)
+    - Numeric precision maintained for financial data
+  </Tab>
+  <Tab title="Audit Columns">
+    - `dwh_create_date` timestamp added to all tables
+    - Enables change tracking and debugging
+    - Defaults to current timestamp on insert
+  </Tab>
+  <Tab title="Data Enrichment">
+    - Product category IDs added (`cat_id` in `crm_prd_info`)
+    - Prepares for Gold layer joins
+  </Tab>
+</Tabs>
+
+---
+
+## Table Catalog
+
+The Silver layer mirrors Bronze structure with quality improvements:
+
+<CardGroup cols={2}>
+  <Card title="CRM Tables" icon="users">
+    - `silver.crm_cust_info`
+    - `silver.crm_prd_info`
+    - `silver.crm_sales_details`
+  </Card>
+  <Card title="ERP Tables" icon="building">
+    - `silver.erp_cust_az12`
+    - `silver.erp_loc_a101`
+    - `silver.erp_px_cat_g1v2`
+  </Card>
+</CardGroup>
+
+---
+
+## CRM Source Tables
+
+### silver.crm_cust_info
+
+Cleansed customer information with audit timestamp.
+
+<Accordion title="Table Definition">
+```sql
+CREATE TABLE silver.crm_cust_info (
+    cst_id INT,
+    cst_key VARCHAR(50),
+    cst_firstname VARCHAR(100),
+    cst_lastname VARCHAR(100),
+    cst_marital_status VARCHAR(100),
+    cst_gndr VARCHAR(10),
+    cst_create_date DATE,
+    dwh_create_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+```
+</Accordion>
+
+#### Schema
+
+| Column | Type | Description | Changes from Bronze |
+|--------|------|-------------|--------------------|
+| `cst_id` | INT | Customer numeric identifier | None |
+| `cst_key` | VARCHAR(50) | Customer business key | None |
+| `cst_firstname` | VARCHAR(100) | Customer first name | None |
+| `cst_lastname` | VARCHAR(100) | Customer last name | None |
+| `cst_marital_status` | VARCHAR(100) | Marital status | None |
+| `cst_gndr` | VARCHAR(10) | Gender code | None |
+| `cst_create_date` | DATE | Customer registration date | None |
+| `dwh_create_date` | TIMESTAMP | DWH load timestamp | **Added** |
+
+<Note>
+  The `dwh_create_date` column tracks when data was loaded into the warehouse, enabling CDC (Change Data Capture) and debugging.
+</Note>
+
+### silver.crm_prd_info
+
+Product catalog with category enrichment and audit timestamp.
+
+<Accordion title="Table Definition">
+```sql
+CREATE TABLE silver.crm_prd_info (
+    prd_id INT,
+    cat_id VARCHAR(50),
+    prd_key VARCHAR(50),
+    prd_name VARCHAR(100),
+    prd_cost DECIMAL(10, 2),
+    prd_line VARCHAR(50),
+    prd_start_dt DATE,
+    prd_end_dt DATE,
+    dwh_create_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+```
+</Accordion>
+
+#### Schema
+
+| Column | Type | Description | Changes from Bronze |
+|--------|------|-------------|--------------------|
+| `prd_id` | INT | Product numeric identifier | None |
+| `cat_id` | VARCHAR(50) | Category identifier (FK to ERP) | **Added** |
+| `prd_key` | VARCHAR(50) | Product business key | None |
+| `prd_name` | VARCHAR(100) | Product name/description | None |
+| `prd_cost` | DECIMAL(10, 2) | Product cost | None |
+| `prd_line` | VARCHAR(50) | Product line code | Changed from CHAR(10) |
+| `prd_start_dt` | DATE | Product start date | None |
+| `prd_end_dt` | DATE | Product end date | None |
+| `dwh_create_date` | TIMESTAMP | DWH load timestamp | **Added** |
+
+<Warning>
+  **Key Improvements**:
+  - `cat_id` added to enable joining with `erp_px_cat_g1v2` in Gold layer
+  - `prd_line` converted from CHAR(10) to VARCHAR(50) to eliminate trailing spaces
+</Warning>
+
+### silver.crm_sales_details
+
+Sales transactions with corrected date types and audit timestamp.
+
+<Accordion title="Table Definition">
+```sql
+CREATE TABLE silver.crm_sales_details (
+    sls_ord_num VARCHAR(50),
+    sls_prd_key VARCHAR(50),
+    sls_cust_id INT,
+    sls_ord_dt DATE,
+    sls_ship_dt DATE,
+    sls_due_dt DATE,
+    sls_sales INT,
+    sls_quantity INT,
+    sls_price DECIMAL(10, 2),
+    dwh_create_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+```
+</Accordion>
+
+#### Schema
+
+| Column | Type | Description | Changes from Bronze |
+|--------|------|-------------|--------------------|
+| `sls_ord_num` | VARCHAR(50) | Sales order number | None |
+| `sls_prd_key` | VARCHAR(50) | Product key (FK) | None |
+| `sls_cust_id` | INT | Customer ID (FK) | None |
+| `sls_ord_dt` | DATE | Order date | Converted from INT |
+| `sls_ship_dt` | DATE | Ship date | Converted from INT |
+| `sls_due_dt` | DATE | Due date | Converted from INT |
+| `sls_sales` | INT | Sales amount | None |
+| `sls_quantity` | INT | Quantity ordered | None |
+| `sls_price` | DECIMAL(10, 2) | Unit price | None |
+| `dwh_create_date` | TIMESTAMP | DWH load timestamp | **Added** |
+
+<Warning>
+  **Critical Transformation**: Date columns converted from INT (YYYYMMDD format) to proper DATE types, enabling date arithmetic and proper sorting.
+</Warning>
+
+#### Date Conversion Logic
+
+The transformation from Bronze to Silver applies the following conversion:
+
+```sql
+-- Example: Convert integer date 20231215 to DATE '2023-12-15'
+INSERT INTO silver.crm_sales_details
+SELECT 
+    sls_ord_num,
+    sls_prd_key,
+    sls_cust_id,
+    TO_DATE(CAST(sls_ord_dt AS VARCHAR), 'YYYYMMDD') as sls_ord_dt,
+    TO_DATE(CAST(sls_ship_dt AS VARCHAR), 'YYYYMMDD') as sls_ship_dt,
+    TO_DATE(CAST(sls_due_dt AS VARCHAR), 'YYYYMMDD') as sls_due_dt,
+    sls_sales,
+    sls_quantity,
+    sls_price,
+    CURRENT_TIMESTAMP as dwh_create_date
+FROM bronze.crm_sales_details;
+```
+
+---
+
+## ERP Source Tables
+
+### silver.erp_cust_az12
+
+Customer demographics with audit timestamp.
+
+<Accordion title="Table Definition">
+```sql
+CREATE TABLE silver.erp_cust_az12 (
+    cid VARCHAR(50),
+    bdate DATE,
+    gen VARCHAR(10),
+    dwh_create_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+```
+</Accordion>
+
+#### Schema
+
+| Column | Type | Description | Changes from Bronze |
+|--------|------|-------------|--------------------|
+| `cid` | VARCHAR(50) | Customer identifier | None |
+| `bdate` | DATE | Customer birth date | None |
+| `gen` | VARCHAR(10) | Gender code | None |
+| `dwh_create_date` | TIMESTAMP | DWH load timestamp | **Added** |
+
+### silver.erp_loc_a101
+
+Customer location data with audit timestamp.
+
+<Accordion title="Table Definition">
+```sql
+CREATE TABLE silver.erp_loc_a101 (
+    cid VARCHAR(50),
+    cntry VARCHAR(100),
+    dwh_create_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+```
+</Accordion>
+
+#### Schema
+
+| Column | Type | Description | Changes from Bronze |
+|--------|------|-------------|--------------------|
+| `cid` | VARCHAR(50) | Customer identifier | None |
+| `cntry` | VARCHAR(100) | Country name | None |
+| `dwh_create_date` | TIMESTAMP | DWH load timestamp | **Added** |
+
+### silver.erp_px_cat_g1v2
+
+Product category hierarchy with audit timestamp.
+
+<Accordion title="Table Definition">
+```sql
+CREATE TABLE silver.erp_px_cat_g1v2 (
+    id VARCHAR(50),
+    cat VARCHAR(50),
+    subcat VARCHAR(50),
+    manteinance VARCHAR(50),
+    dwh_create_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+```
+</Accordion>
+
+#### Schema
+
+| Column | Type | Description | Changes from Bronze |
+|--------|------|-------------|--------------------|
+| `id` | VARCHAR(50) | Category identifier | None |
+| `cat` | VARCHAR(50) | Primary category | None |
+| `subcat` | VARCHAR(50) | Subcategory | None |
+| `manteinance` | VARCHAR(50) | Maintenance classification | None |
+| `dwh_create_date` | TIMESTAMP | DWH load timestamp | **Added** |
+
+---
+
+## Transformation Pipeline
+
+<Steps>
+  <Step title="Extract from Bronze">
+    Read raw data from Bronze layer tables
+  </Step>
+  <Step title="Apply Type Conversions">
+    Convert INT dates to DATE, CHAR to VARCHAR, etc.
+  </Step>
+  <Step title="Add Audit Columns">
+    Insert `dwh_create_date` with current timestamp
+  </Step>
+  <Step title="Enrich Data">
+    Add derived columns (e.g., `cat_id` for products)
+  </Step>
+  <Step title="Load to Silver">
+    Insert transformed records into Silver tables
+  </Step>
+</Steps>
+
+## Data Quality Improvements
+
+<AccordionGroup>
+  <Accordion title="Type Safety" icon="shield-check">
+    **Problem**: Bronze stores dates as integers and uses CHAR fields
+    
+    **Solution**: 
+    - Convert integer dates (YYYYMMDD) to proper DATE types
+    - Convert CHAR to VARCHAR to eliminate trailing spaces
+    - Maintain numeric precision for financial data
+  </Accordion>
+  
+  <Accordion title="Audit Trail" icon="clock">
+    **Problem**: No visibility into when data was loaded
+    
+    **Solution**:
+    - Add `dwh_create_date` timestamp to all tables
+    - Defaults to CURRENT_TIMESTAMP on insert
+    - Enables debugging and change tracking
+  </Accordion>
+  
+  <Accordion title="Data Enrichment" icon="plus-circle">
+    **Problem**: Missing links between CRM and ERP data
+    
+    **Solution**:
+    - Add `cat_id` to `crm_prd_info` for joining with ERP categories
+    - Prepares data for Gold layer dimensional modeling
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Usage Guidelines
+
+### When to Use Silver
+
+<CardGroup cols={2}>
+  <Card title="Data Science" icon="flask">
+    Feature engineering and ML model training
+  </Card>
+  <Card title="Advanced Analytics" icon="chart-mixed">
+    Custom queries requiring cleansed data
+  </Card>
+  <Card title="Data Quality" icon="magnifying-glass-chart">
+    Profiling and validation workflows
+  </Card>
+  <Card title="Integration" icon="plug">
+    Source for external systems and APIs
+  </Card>
+</CardGroup>
+
+### When to Use Gold Instead
+
+- Standard business reporting (use pre-built star schema)
+- BI dashboards and visualizations
+- Executive KPI tracking
+- Self-service analytics for business users
+
+<Note>
+  Silver provides flexibility for custom analysis, while Gold optimizes for common analytical patterns.
+</Note>
+
+---
+
+## ETL Example
+
+Here's an example transformation from Bronze to Silver for the sales table:
+
+```sql
+-- Clear existing Silver data (for full refresh)
+TRUNCATE TABLE silver.crm_sales_details;
+
+-- Transform and load from Bronze
+INSERT INTO silver.crm_sales_details (
+    sls_ord_num,
+    sls_prd_key,
+    sls_cust_id,
+    sls_ord_dt,
+    sls_ship_dt,
+    sls_due_dt,
+    sls_sales,
+    sls_quantity,
+    sls_price,
+    dwh_create_date
+)
+SELECT 
+    sls_ord_num,
+    sls_prd_key,
+    sls_cust_id,
+    -- Convert integer dates to proper DATE type
+    TO_DATE(CAST(sls_ord_dt AS VARCHAR), 'YYYYMMDD') as sls_ord_dt,
+    TO_DATE(CAST(sls_ship_dt AS VARCHAR), 'YYYYMMDD') as sls_ship_dt,
+    TO_DATE(CAST(sls_due_dt AS VARCHAR), 'YYYYMMDD') as sls_due_dt,
+    sls_sales,
+    sls_quantity,
+    sls_price,
+    CURRENT_TIMESTAMP as dwh_create_date
+FROM bronze.crm_sales_details
+WHERE sls_ord_num IS NOT NULL;  -- Basic validation
+```
+
+---
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Bronze Layer" icon="arrow-left" href="/data-model/bronze-layer">
+    Review raw source data structure
+  </Card>
+  <Card title="Gold Layer" icon="arrow-right" href="/data-model/gold-layer">
+    Explore the dimensional star schema
+  </Card>
+</CardGroup>
